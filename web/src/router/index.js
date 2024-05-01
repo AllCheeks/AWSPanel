@@ -7,6 +7,7 @@ import Instance from '@/views/Instance'
 import Quota from '@/views/Quota'
 import User from '@/views/User'
 import Manger from '@/views/Manger'
+import Sponsor from '@/views/Sponsor'  // 新增的导入
 
 Vue.use(VueRouter)
 
@@ -57,6 +58,14 @@ const routes = [
         meta: {
             needLogin: true
         }
+    },
+    {
+        path: '/Sponsor',  // 新增的路由
+        name: 'Sponsor',
+        component: Sponsor,
+        meta: {
+            needLogin: true  // 如果需要登录才能访问
+        }
     }
 ]
 
@@ -65,24 +74,5 @@ const router = new VueRouter({
     base: process.env.BASE_URL,
     routes
 })
-
-function CheckCookie(name) {
-    let arr = document.cookie.match(new RegExp("(^| )" + name + "=([^;]*)(;|$)"));
-    return arr != null;
-}
-
-router.beforeEach((to, from, next) => {
-    if (to.meta.needLogin) {
-        if (CheckCookie("loginSession")) {
-            next()
-        } else {
-            next({
-                path: '/login',
-            })
-        }
-    } else {
-        next()
-    }
-});
 
 export default router

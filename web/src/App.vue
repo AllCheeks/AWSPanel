@@ -7,6 +7,14 @@
       >
 
         <v-list-item-group active-class="nattier-blue--text text--accent-4">
+            
+        <v-list-item onclick="window.location.href='/Sponsor'">
+          <v-list-item-icon>
+            <v-icon>mdi-crown</v-icon>
+          </v-list-item-icon>
+          <v-list-item-title>赞助会员 | Sponsor</v-list-item-title>
+        </v-list-item>
+            
           <v-list-item onclick="window.location.href='/'">
             <v-list-item-icon>
               <v-icon>mdi-home</v-icon>
