@@ -1,0 +1,5242 @@
+内容来自文件: ./README.md
+# Aws-Panel
+
+一个可以管理AWS资源的Web面板
+
+[![](https://img.shields.io/github/license/Yuzuki999/AWS-Panel?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0.html)
+
+暂时未实现用户权限及用户管理，为避免风险，建议仅在本地使用
+
+# 已实现的功能
+
+- [x] 分用户多密钥
+- [x] EC2管理
+- [x] Lightsail管理
+- [ ] AGA管理
+- [ ] Wavelength管理
+- [ ] 配额相关操作
+- [x] 用户管理
+
+# 使用
+
+从Releases里下载可执行文件并运行，然后访问http://127.0.0.1:8011
+初始管理员帐号密码为admin admin123456
+
+# 构建
+
+``` bash
+git clone https://github.com/Yuzuki616/AWS-Panel.git
+cd AWS-Panel
+bash build.sh
+```
+
+# Thanks
+
+- [Gin](https://github.com/gin-gonic/gin)
+- [Aws-Sdk-Go](https://github.com/aws/aws-sdk-go)
+- [Vue.js](https://vuejs.org/)
+- [Vuetify](https://vuetifyjs.com/)
+- [Axios](https://github.com/axios/axios)
+
+----------------------------------------
+内容来自文件: ./build.sh
+mkdir tmp
+CGO_ENABLED=1 go build
+mv Aws-Panel tmp/
+cd ./web/
+npm install
+npm run build
+mv dist/ ../tmp/web
+cd ../tmp/
+zip -r Aws-Panel.zip *
+mv Aws-Panel.zip ../
+cd ../
+rm -rf tmp
+
+----------------------------------------
+内容来自文件: ./main.go
+package main
+
+import (
+	log "github.com/sirupsen/logrus"
+	easy "github.com/t-tomalak/logrus-easy-formatter"
+	"github.com/yuzuki999/Aws-Panel/data"
+	"github.com/yuzuki999/Aws-Panel/router"
+	"github.com/yuzuki999/Aws-Panel/utils"
+	"time"
+)
+
+const version = "0.3.6"
+
+func printVersion() {
+	log.Info("Aws Panel")
+	log.Info("Version: ", version)
+	log.Info("Github: https://github.com/yuzuki999/AWS-Panel")
+}
+
+func main() {
+	log.SetFormatter(&easy.Formatter{
+		TimestampFormat: "01-02 15:04:05",
+		LogFormat:       "Aws-Panel | %time% | %lvl% >> %msg% \n",
+	})
+	printVersion()
+	if utils.RunningByDoubleClick() {
+		log.Warning("不建议直接双击运行本程序，这将导致一些非可预料后果，请通过控制台启动本程序")
+		log.Warning("将等待10秒后启动")
+		time.Sleep(time.Second * 10)
+	}
+	dbErr := data.DbInit("./data.db")
+	if dbErr != nil {
+		log.Error("Database init error: ", dbErr)
+	}
+	route := router.New()
+	route.LoadRoute()
+	startErr := route.Start()
+	if startErr != nil {
+		log.Error(startErr)
+	}
+}
+
+----------------------------------------
+内容来自文件: ./data.db
+无法读取文件: ./data.db，错误: 'utf-8' codec can't decode byte 0x9d in position 111: invalid start byte
+内容来自文件: ./test.py
+import os
+
+def write_files_to_file(dir_path, output_file, blacklist):
+    with open(output_file, 'w', encoding='utf-8') as out:
+        for root, dirs, files in os.walk(dir_path, topdown=True):
+            # 过滤掉黑名单中的文件夹
+            dirs[:] = [d for d in dirs if d not in blacklist]
+            for file in files:
+                if file in blacklist:
+                    continue  # 如果文件名在黑名单中，跳过此文件
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        out.write(f"内容来自文件: {file_path}\n")
+                        out.write(f.read())
+                        out.write("\n" + "-" * 40 + "\n")  # 分隔线
+                except Exception as e:
+                    out.write(f"无法读取文件: {file_path}，错误: {e}\n")
+
+# 设置文件和文件夹的黑名单
+blacklist = ["LICENSE","go.sum","package-lock.json",".github",".git","1.txt","go.mod","assets","node_modules","css","img","js"]
+
+# 开始从当前文件夹递归地写入文件内容到 1.txt，跳过黑名单中的文件和文件夹
+write_files_to_file(".", "1.txt", blacklist)
+
+----------------------------------------
+内容来自文件: ./aws/aga.go
+package aws
+
+import (
+	"github.com/aws/aws-sdk-go/aws"
+	aga "github.com/aws/aws-sdk-go/service/globalaccelerator"
+	"time"
+)
+
+type AgaInfo struct {
+	Name     *string
+	Status   *string
+	Arn      string
+	Ip       []*aga.IpSet
+	Protocol *string
+	Port     []*aga.PortOverride
+}
+
+func (p *Aws) CreateAga(Name string, Region string, InstanceId string) (*AgaInfo, error) {
+	svc := aga.New(p.Sess)
+	IdempotencyToken := time.Unix(time.Now().Unix(), 0).Format("2006-01-02_15:04:05")
+	createAccRt, createAccErr := svc.CreateAccelerator(&aga.CreateAcceleratorInput{
+		Name:             aws.String(Name),
+		Enabled:          aws.Bool(false),
+		IdempotencyToken: aws.String(IdempotencyToken),
+	})
+	if createAccErr != nil {
+		return nil, createAccErr
+	}
+	createLiRt, createLiErr := svc.CreateListener(&aga.CreateListenerInput{
+		AcceleratorArn: createAccRt.Accelerator.AcceleratorArn,
+		PortRanges: []*aga.PortRange{
+			{
+				FromPort: aws.Int64(1),
+				ToPort:   aws.Int64(65535),
+			},
+		},
+		Protocol: aws.String("TCP"),
+	})
+	if createLiErr != nil {
+		return nil, createLiErr
+	}
+	createEndRt, createEndErr := svc.CreateEndpointGroup(&aga.CreateEndpointGroupInput{
+		EndpointGroupRegion: aws.String(Region),
+		IdempotencyToken:    aws.String(IdempotencyToken),
+		ListenerArn:         createLiRt.Listener.ListenerArn,
+		HealthCheckPort:     aws.Int64(22),
+		EndpointConfigurations: []*aga.EndpointConfiguration{
+			{
+				EndpointId: aws.String(InstanceId),
+			},
+		},
+	})
+	if createEndErr != nil {
+		return nil, createEndErr
+	}
+	return &AgaInfo{
+		Name:     createAccRt.Accelerator.Name,
+		Status:   createAccRt.Accelerator.Status,
+		Arn:      *createAccRt.Accelerator.AcceleratorArn,
+		Ip:       createAccRt.Accelerator.IpSets,
+		Protocol: createLiRt.Listener.Protocol,
+		Port:     createEndRt.EndpointGroup.PortOverrides,
+	}, nil
+}
+
+func (p *Aws) ListAga() ([]*aga.Accelerator, error) {
+	svc := aga.New(p.Sess)
+	rt, err := svc.ListAccelerators(&aga.ListAcceleratorsInput{})
+	if err != nil {
+		return nil, err
+	}
+	return rt.Accelerators, err
+}
+
+/* func (p *Aws) GetAgaInfo(AcceleratorArn string) (*AgaInfo, error) {
+	svc := aga.New(p.Sess)
+	accRt, accErr := svc.DescribeAccelerator(&aga.DescribeAcceleratorInput{AcceleratorArn: aws.String(AcceleratorArn)})
+	if accErr != nil {
+		return nil, accErr
+	}
+	liRt, liErr := svc.ListListeners(&aga.ListListenersInput{AcceleratorArn: accRt.Accelerator.AcceleratorArn})
+	if liErr != nil {
+		return nil, liErr
+	}
+	endRt, endErr := svc.ListEndpointGroups(&aga.ListEndpointGroupsInput{ListenerArn: liRt.Listeners[0].ListenerArn})
+	if endErr != nil {
+		return nil, endErr
+	}
+	return &AgaInfo{
+		Username:   accRt.Accelerator.Username,
+		Status: accRt.Accelerator.Status,
+		Arn: AcceleratorArn + "_" +
+			*liRt.Listeners[0].ListenerArn + "_" + *endRt.EndpointGroups[0].EndpointGroupArn,
+		Ip:       accRt.Accelerator.IpSets,
+		Protocol: liRt.Listeners[0].Protocol,
+		Port:     endRt.EndpointGroups[0].PortOverrides,
+	}, nil
+}*/
+
+func (p *Aws) DeleteAga(AcceleratorArn string) error {
+	svc := aga.New(p.Sess)
+	_, updateErr := svc.UpdateAccelerator(&aga.UpdateAcceleratorInput{
+		AcceleratorArn: aws.String(AcceleratorArn),
+		Enabled:        aws.Bool(false),
+	})
+	if updateErr != nil {
+		return updateErr
+	}
+	_, deleteErr := svc.DeleteAccelerator(&aga.DeleteAcceleratorInput{AcceleratorArn: aws.String(AcceleratorArn)})
+	if deleteErr != nil {
+		return deleteErr
+	}
+	return nil
+}
+
+----------------------------------------
+内容来自文件: ./aws/aws.go
+package aws
+
+import (
+	"crypto/tls"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"net/http"
+	"net/url"
+)
+
+type Aws struct {
+	Sess *session.Session
+}
+
+func New(Region string, Id string, Secret string, Proxy string) (*Aws, error) {
+	config := &aws.Config{
+		Region:      aws.String(Region),
+		Credentials: credentials.NewStaticCredentials(Id, Secret, ""),
+	}
+	if Proxy != "" {
+		config.HTTPClient = &http.Client{
+			Transport: &http.Transport{
+				Proxy: func(*http.Request) (*url.URL, error) {
+					return url.Parse(Proxy)
+				},
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
+	sess, err := session.NewSession(config)
+	if err != nil {
+		return nil, err
+	}
+	c := &Aws{
+		Sess: sess,
+	}
+	return c, nil
+}
+
+----------------------------------------
+内容来自文件: ./aws/ec2.go
+package aws
+
+import (
+	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"time"
+)
+
+type Ec2Info struct {
+	Name       *string
+	InstanceId *string
+	Status     *string
+	Type       *string
+	Ip         *string
+	Key        *string
+}
+
+func (p *Aws) CreateEc2(Ami string, Ec2Type string, Name string, DiskSize int64) (*Ec2Info, error) {
+	svc := ec2.New(p.Sess)
+	dateName := Name + time.Unix(time.Now().Unix(), 0).Format("_2006-01-02_15:04:05")
+	keyRt, keyErr := svc.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: &dateName})
+	if keyErr != nil {
+		return nil, fmt.Errorf("create key error: %v", keyErr)
+	} //创建ssh密钥
+	secRt, secErr := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String(dateName + "security"),
+		Description: aws.String("A security group for aws manger bot"),
+	}) //创建安全组
+	if secErr != nil {
+		return nil, fmt.Errorf("create security group error: %v", secErr)
+	}
+	_, authSecInErr := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: secRt.GroupId,
+		IpPermissions: []*ec2.IpPermission{
+			{
+				IpProtocol: aws.String("-1"),
+				IpRanges: []*ec2.IpRange{
+					{
+						CidrIp: aws.String("0.0.0.0/0"),
+					},
+				},
+				FromPort: aws.Int64(-1),
+				ToPort:   aws.Int64(-1),
+			},
+		},
+	}) //添加入站规则
+	if authSecInErr != nil {
+		return nil, fmt.Errorf(
+			"authorize security group ingress error: %v", authSecInErr)
+	}
+	ebs, ebsErr := p.getAmiEbsMap(Ami)
+	if ebsErr != nil {
+		return nil, ebsErr
+	}
+	ebs[0].Ebs.VolumeSize = &DiskSize
+	runRt, runErr := svc.RunInstances(&ec2.RunInstancesInput{
+		ImageId:             aws.String(Ami),
+		InstanceType:        aws.String(Ec2Type),
+		MinCount:            aws.Int64(1),
+		MaxCount:            aws.Int64(1),
+		KeyName:             &dateName,
+		BlockDeviceMappings: ebs,
+		SecurityGroupIds:    []*string{secRt.GroupId},
+	}) //创建ec2实例
+	if runErr != nil {
+		return nil, fmt.Errorf("run instances error: %v", runErr)
+	}
+	_, tagErr := svc.CreateTags(&ec2.CreateTagsInput{
+		Resources: []*string{runRt.Instances[0].InstanceId},
+		Tags: []*ec2.Tag{
+			{
+				Key:   aws.String("Name"),
+				Value: aws.String(Name),
+			},
+		},
+	}) //创建标签
+	if tagErr != nil {
+		return nil, fmt.Errorf("create tag error: %v", tagErr)
+	}
+	return &Ec2Info{
+		Name:       &Name,
+		InstanceId: runRt.Instances[0].InstanceId,
+		Status:     runRt.Instances[0].State.Name,
+		Key:        keyRt.KeyMaterial,
+	}, nil
+}
+
+func (p *Aws) ChangeEc2Ip(InstanceId string) (*string, error) {
+	svc := ec2.New(p.Sess)
+	desRt, desErr := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("instance-id"),
+				Values: []*string{aws.String(InstanceId)},
+			},
+		},
+	})
+	if desErr != nil {
+		return nil, fmt.Errorf("describe addresses error: %v", desErr)
+	}
+	if len(desRt.Addresses) != 0 {
+		_, relErr := svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: desRt.Addresses[0].AllocationId})
+		if relErr != nil {
+			return nil, fmt.Errorf("release ip error: %s", relErr)
+		}
+	}
+	allRt, allErr := svc.AllocateAddress(&ec2.AllocateAddressInput{})
+	if allErr != nil {
+		return nil, fmt.Errorf("allocate address error: %v", allErr)
+	}
+	_, assErr := svc.AssociateAddress(&ec2.AssociateAddressInput{
+		AllocationId: allRt.AllocationId,
+		InstanceId:   aws.String(InstanceId),
+	})
+	if assErr != nil {
+		return nil, fmt.Errorf("associate address error: %v", assErr)
+	}
+	return allRt.PublicIp, nil
+}
+
+func (p *Aws) GetEc2Info(InstanceId string) (*Ec2Info, error) {
+	svc := ec2.New(p.Sess)
+	rt, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(InstanceId)}})
+	if err != nil {
+		return nil, err
+	}
+	return &Ec2Info{
+		Name:       CheckNameNil(rt.Reservations[0].Instances[0].Tags),
+		InstanceId: rt.Reservations[0].Instances[0].InstanceId,
+		Status:     rt.Reservations[0].Instances[0].State.Name,
+		Ip:         rt.Reservations[0].Instances[0].PublicIpAddress,
+	}, nil
+}
+
+func (p *Aws) ListEc2() ([]*ec2.Reservation, error) {
+	svc := ec2.New(p.Sess)
+	rt, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{MaxResults: aws.Int64(100)})
+	if err != nil {
+		return nil, err
+	}
+	return rt.Reservations, nil
+}
+
+func (p *Aws) StartEc2(InstanceId string) error {
+	svc := ec2.New(p.Sess)
+	_, err := svc.StartInstances(&ec2.StartInstancesInput{InstanceIds: []*string{aws.String(InstanceId)}})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) StopEc2(InstanceId string) error {
+	svc := ec2.New(p.Sess)
+	_, err := svc.StopInstances(&ec2.StopInstancesInput{InstanceIds: []*string{aws.String(InstanceId)}})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) RebootEc2(InstanceId string) error {
+	svc := ec2.New(p.Sess)
+	_, err := svc.RebootInstances(&ec2.RebootInstancesInput{InstanceIds: []*string{aws.String(InstanceId)}})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) DeleteEc2(InstanceId string) error {
+	svc := ec2.New(p.Sess)
+	ip, ipErr := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("instance-id"),
+				Values: []*string{aws.String(InstanceId)},
+			},
+		},
+	})
+	if ipErr != nil {
+		return fmt.Errorf("get ip error: %v", ipErr)
+	}
+	if len(ip.Addresses) != 0 {
+		_, relErr := svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: ip.Addresses[0].AssociationId})
+		if relErr != nil {
+			return fmt.Errorf("release ip error: %v", relErr)
+		}
+	}
+	_, err := svc.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: []*string{aws.String(InstanceId)}})
+	if err != nil {
+		return fmt.Errorf("terminate instance error: %v", err)
+	}
+	return nil
+}
+
+func (p *Aws) GetAmiId(AmiName string) (string, error) {
+	svc := ec2.New(p.Sess)
+	ami, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("name"),
+				Values: []*string{aws.String(AmiName)},
+			},
+			{
+				Name:   aws.String("architecture"),
+				Values: []*string{aws.String("x86_64")},
+			},
+		}})
+	if err != nil {
+		return "", err
+	}
+	return *ami.Images[0].ImageId, nil
+}
+
+func (p *Aws) getAmiEbsMap(AmiId string) ([]*ec2.BlockDeviceMapping, error) {
+	svc := ec2.New(p.Sess)
+	ami, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("image-id"),
+				Values: []*string{aws.String(AmiId)},
+			},
+			{
+				Name:   aws.String("architecture"),
+				Values: []*string{aws.String("x86_64")},
+			},
+		}})
+	if err != nil {
+		return nil, err
+	}
+	return ami.Images[0].BlockDeviceMappings, nil
+}
+
+func (p *Aws) GetWindowsPassword(InstanceId string) (*ec2.GetPasswordDataOutput, error) {
+	svc := ec2.New(p.Sess)
+	rt, err := svc.GetPasswordData(&ec2.GetPasswordDataInput{InstanceId: aws.String(InstanceId)})
+	if err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
+----------------------------------------
+内容来自文件: ./aws/lightsail.go
+package aws
+
+import (
+	"fmt"
+	"math/rand"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/lightsail"
+)
+
+type LsInfo struct {
+	Name       *string
+	Ip         *string
+	SourceName *string
+	Type       *string
+	Status     *string
+	Key        *string
+}
+
+func (p *Aws) GetBlueprintId() (*lightsail.GetBlueprintsOutput, error) {
+	svc := lightsail.New(p.Sess)
+	blueID, blueErr := svc.GetBlueprints(&lightsail.GetBlueprintsInput{})
+	if blueErr != nil {
+		return nil, blueErr
+	}
+	return blueID, nil
+}
+
+func (p *Aws) GetRegions() ([]*lightsail.Region, error) {
+	svc := lightsail.New(p.Sess)
+	regions, regErr := svc.GetRegions(&lightsail.GetRegionsInput{
+		IncludeAvailabilityZones: aws.Bool(true),
+	})
+	if regErr != nil {
+		return nil, regErr
+	}
+	return regions.Regions, nil
+}
+
+func (p *Aws) CreateLs(Name string, AvailabilityZone string, BlueprintId string, BundleId string) (*LsInfo, error) {
+	svc := lightsail.New(p.Sess)
+	dateName := Name + time.Unix(time.Now().Unix(), 0).
+		Format(AvailabilityZone+"2006_01_02_15_04_05_"+strconv.Itoa(rand.Intn(1000)))
+	key, keyErr := svc.CreateKeyPair(&lightsail.CreateKeyPairInput{
+		KeyPairName: aws.String(dateName)})
+	if keyErr != nil {
+		return nil, fmt.Errorf("create key error: %v", keyErr)
+	}
+	lsRt, lsErr := svc.CreateInstances(&lightsail.CreateInstancesInput{
+		AvailabilityZone: aws.String(AvailabilityZone),
+		BlueprintId:      aws.String(BlueprintId),
+		BundleId:         aws.String(BundleId),
+		InstanceNames:    []*string{aws.String(Name)},
+		KeyPairName:      aws.String(dateName),
+		Tags: []*lightsail.Tag{
+			{
+				Key:   aws.String("SIp"),
+				Value: aws.String(dateName),
+			},
+		},
+	})
+	if lsErr != nil {
+		return nil, fmt.Errorf("create ls error: %v", lsErr)
+	}
+	/*_, allErr := svc.AllocateStaticIp(&lightsail.AllocateStaticIpInput{
+		StaticIpName: aws.String(dateName + "_ip")})
+	if allErr != nil {
+		return nil, fmt.Errorf("allocate ip error: %v", allErr)
+	}
+	_, attErr := svc.AttachStaticIp(&lightsail.AttachStaticIpInput{
+		StaticIpName: aws.String(dateName + "_ip"),
+		InstanceName: aws.String(Name),
+	})
+	if attErr != nil {
+		return nil, fmt.Errorf("attach ip error: %v", attErr)
+	}*/
+	return &LsInfo{
+		Name:   &Name,
+		Status: lsRt.Operations[0].Status,
+		Key:    key.PrivateKeyBase64,
+	}, nil
+}
+
+func (p *Aws) OpenLsPorts(Name string) error {
+	svc := lightsail.New(p.Sess)
+	_, err := svc.OpenInstancePublicPorts(&lightsail.OpenInstancePublicPortsInput{
+		InstanceName: aws.String(Name),
+		PortInfo: &lightsail.PortInfo{
+			Protocol: aws.String("all"),
+			FromPort: aws.Int64(0),
+			ToPort:   aws.Int64(65535),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) GetLsInfo(Name string) (*LsInfo, error) {
+	svc := lightsail.New(p.Sess)
+	rt, err := svc.GetInstance(&lightsail.GetInstanceInput{
+		InstanceName: aws.String(Name)})
+	if err != nil {
+		return nil, err
+	}
+	var tag *string
+	if len(rt.Instance.Tags) > 0 {
+		tag = rt.Instance.Tags[0].Value
+	}
+	return &LsInfo{
+		Name:       rt.Instance.Name,
+		Ip:         rt.Instance.PublicIpAddress,
+		SourceName: tag,
+		Status:     rt.Instance.State.Name,
+	}, nil
+}
+
+func (p *Aws) ListLs() ([]*lightsail.Instance, error) {
+	svc := lightsail.New(p.Sess)
+	rt, err := svc.GetInstances(&lightsail.GetInstancesInput{})
+	if err != nil {
+		return nil, err
+	}
+	return rt.Instances, nil
+}
+
+func (p *Aws) ChangeLsIp(Name, Zone string) error {
+	svc := lightsail.New(p.Sess)
+	getRt, getErr := p.GetLsInfo(Name)
+	if getErr != nil {
+		return getErr
+	}
+	if getRt.SourceName == nil {
+		*getRt.SourceName = Name + time.Unix(time.Now().Unix(), 0).
+			Format(Zone+"2006_01_02_15_04_05_"+strconv.Itoa(rand.Intn(1000)))
+		*getRt.SourceName = *getRt.SourceName + "_ip"
+		_, detErr := svc.DetachStaticIp(&lightsail.DetachStaticIpInput{
+			StaticIpName: getRt.SourceName})
+		if detErr != nil {
+			return fmt.Errorf("detach ip error: %v", detErr)
+		}
+		_, relErr := svc.ReleaseStaticIp(&lightsail.ReleaseStaticIpInput{
+			StaticIpName: getRt.SourceName})
+		if relErr != nil {
+			return fmt.Errorf("release ip error: %v", relErr)
+		}
+	}
+	*getRt.SourceName = *getRt.SourceName + "_ip"
+	_, allErr := svc.AllocateStaticIp(&lightsail.AllocateStaticIpInput{
+		StaticIpName: getRt.SourceName})
+	if allErr != nil {
+		return fmt.Errorf("allocate ip error: %v", allErr)
+	}
+	_, attErr := svc.AttachStaticIp(&lightsail.AttachStaticIpInput{
+		StaticIpName: getRt.SourceName,
+		InstanceName: aws.String(Name),
+	})
+	if attErr != nil {
+		return fmt.Errorf("attach ip error: %v", attErr)
+	}
+	return nil
+}
+
+func (p *Aws) StopLs(Name string) error {
+	svc := lightsail.New(p.Sess)
+	_, err := svc.StopInstance(&lightsail.StopInstanceInput{
+		InstanceName: aws.String(Name)})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) StartLs(Name string) error {
+	svc := lightsail.New(p.Sess)
+	_, err := svc.StartInstance(&lightsail.StartInstanceInput{
+		InstanceName: aws.String(Name)})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) RebootLs(Name string) error {
+	svc := lightsail.New(p.Sess)
+	_, err := svc.RebootInstance(&lightsail.RebootInstanceInput{
+		InstanceName: aws.String(Name)})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) DeleteLs(Name string, SourceName string) error {
+	svc := lightsail.New(p.Sess)
+	if SourceName != "" {
+		ipName := SourceName + "_ip"
+		_, detErr := svc.DetachStaticIp(&lightsail.DetachStaticIpInput{
+			StaticIpName: aws.String(ipName)})
+		if detErr != nil {
+			return fmt.Errorf("detach ip error: %v", detErr)
+		}
+		_, relErr := svc.ReleaseStaticIp(&lightsail.ReleaseStaticIpInput{
+			StaticIpName: aws.String(ipName)})
+		if relErr != nil {
+			return fmt.Errorf("release ip error: %v", relErr)
+		}
+		_, delErr := svc.DeleteKeyPair(&lightsail.DeleteKeyPairInput{
+			KeyPairName: aws.String(SourceName)})
+		if delErr != nil {
+			return fmt.Errorf("delete key error: %v", delErr)
+		}
+	}
+	_, delInstance := svc.DeleteInstance(&lightsail.DeleteInstanceInput{
+		InstanceName: aws.String(Name)})
+	if delInstance != nil {
+		return fmt.Errorf("delete instance error: %v", delInstance)
+	}
+	return nil
+}
+
+----------------------------------------
+内容来自文件: ./aws/quota.go
+package aws
+
+import (
+	"github.com/aws/aws-sdk-go/aws"
+	quota "github.com/aws/aws-sdk-go/service/servicequotas"
+)
+
+func (p *Aws) GetQuota(ServiceCode string, QuotaCode string) (*quota.ServiceQuota, error) {
+	svc := quota.New(p.Sess)
+	rt, err := svc.GetServiceQuota(&quota.GetServiceQuotaInput{
+		ServiceCode: aws.String(ServiceCode),
+		QuotaCode:   aws.String(QuotaCode),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return rt.Quota, nil
+}
+func (p *Aws) ChangeQuota(ServiceCode string, QuotaCode string, DesiredValue float64) error {
+	svc := quota.New(p.Sess)
+	_, err := svc.RequestServiceQuotaIncrease(&quota.RequestServiceQuotaIncreaseInput{
+		ServiceCode:  aws.String(ServiceCode),
+		QuotaCode:    aws.String(QuotaCode),
+		DesiredValue: aws.Float64(DesiredValue),
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Aws) ListChangeQuotaRequest(ServiceCode string, QuotaCode string) ([]*quota.RequestedServiceQuotaChange, error) {
+	svc := quota.New(p.Sess)
+	rt, err := svc.ListRequestedServiceQuotaChangeHistoryByQuota(&quota.ListRequestedServiceQuotaChangeHistoryByQuotaInput{
+		ServiceCode: aws.String(ServiceCode),
+		QuotaCode:   aws.String(QuotaCode),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return rt.RequestedQuotas, nil
+}
+
+----------------------------------------
+内容来自文件: ./aws/utils.go
+package aws
+
+import "github.com/aws/aws-sdk-go/service/ec2"
+
+func CheckNameNil(v []*ec2.Tag) *string {
+	if v == nil {
+		return nil
+	}
+	return v[0].Value
+}
+
+----------------------------------------
+内容来自文件: ./aws/wavelength.go
+package aws
+
+import (
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"time"
+)
+
+func (p *Aws) getVpcId() (string, error) {
+	svc := ec2.New(p.Sess)
+	vpc, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{})
+	if err != nil {
+		return "", err
+	}
+	return *vpc.Vpcs[0].VpcId, nil
+}
+
+func (p *Aws) CreateWl(Zone string) (string, error) {
+	svc := ec2.New(p.Sess)
+	vpcId, vpcErr := p.getVpcId()
+	if vpcErr != nil {
+		return "", vpcErr
+	}
+	sub, subErr := svc.CreateSubnet(&ec2.CreateSubnetInput{
+		AvailabilityZone: aws.String(Zone),
+		CidrBlock:        aws.String("172.31.128.0/20"),
+		VpcId:            aws.String(vpcId),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("subnet"),
+				Tags: []*ec2.Tag{
+					{
+						Key:   aws.String("Username"),
+						Value: aws.String("aws_manger_subnet"),
+					},
+				},
+			},
+		},
+	})
+	if subErr != nil {
+		return "", subErr
+	}
+	ca, caErr := svc.CreateCarrierGateway(&ec2.CreateCarrierGatewayInput{
+		VpcId: aws.String(vpcId),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("carrier-gateway"),
+				Tags: []*ec2.Tag{
+					{
+						Key:   aws.String("Username"),
+						Value: aws.String("aws_manger_gateway"),
+					},
+				},
+			},
+		},
+	})
+	if caErr != nil {
+		return "", caErr
+	}
+	route, routeErr := svc.CreateRouteTable(&ec2.CreateRouteTableInput{
+		VpcId: aws.String(vpcId),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("route-table"),
+				Tags: []*ec2.Tag{
+					{
+						Key:   aws.String("Username"),
+						Value: aws.String("aws_manger_route"),
+					},
+				},
+			},
+		},
+	})
+	if routeErr != nil {
+		return "", routeErr
+	}
+	_, assErr := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: route.RouteTable.RouteTableId,
+		GatewayId:    ca.CarrierGateway.CarrierGatewayId,
+	})
+	if assErr != nil {
+		return "", assErr
+	}
+	return *sub.Subnet.SubnetId, nil
+}
+
+func (p Aws) GetSubnetInfo() (*ec2.DescribeSubnetsOutput, error) {
+	svc := ec2.New(p.Sess)
+	sub, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("tag:Username"),
+				Values: []*string{aws.String("kddi")},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+func (p *Aws) CreateEc2Wl(SubId string, Ami string, Name string, DiskSize int64) (*Ec2Info, error) {
+	svc := ec2.New(p.Sess)
+	dateName := Name + time.Unix(time.Now().Unix(), 0).Format("_2006-01-02_15:04:05")
+	keyRt, keyErr := svc.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: &dateName})
+	if keyErr != nil {
+		return nil, keyErr
+	} //创建ssh密钥
+	secRt, secErr := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String(dateName + "security"),
+		Description: aws.String("A security group for aws manger bot"),
+	}) //创建安全组
+	if secErr != nil {
+		return nil, secErr
+	}
+	_, authSecInErr := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: secRt.GroupId,
+		IpPermissions: []*ec2.IpPermission{
+			{
+				IpProtocol: aws.String("-1"),
+				IpRanges: []*ec2.IpRange{
+					{
+						CidrIp: aws.String("0.0.0.0/0"),
+					},
+				},
+				FromPort: aws.Int64(-1),
+				ToPort:   aws.Int64(-1),
+			},
+		},
+	}) //添加入站规则
+	if authSecInErr != nil {
+		return nil, authSecInErr
+	}
+	runRt, runErr := svc.RunInstances(&ec2.RunInstancesInput{
+		ImageId:      aws.String(Ami),
+		InstanceType: aws.String("t3.medium"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		KeyName:      &dateName,
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			DeviceIndex:               aws.Int64(0),
+			SubnetId:                  aws.String(SubId),
+			AssociateCarrierIpAddress: aws.Bool(true),
+			Groups:                    []*string{secRt.GroupId},
+		}},
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"),
+			Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(DiskSize)}}},
+	}) //创建ec2实例
+	if runErr != nil {
+		return nil, runErr
+	}
+	_, tagErr := svc.CreateTags(&ec2.CreateTagsInput{
+		Resources: []*string{runRt.Instances[0].InstanceId},
+		Tags: []*ec2.Tag{
+			{
+				Key:   aws.String("Username"),
+				Value: aws.String(Name),
+			},
+		},
+	}) //创建标签
+	if tagErr != nil {
+		return nil, tagErr
+	}
+	return &Ec2Info{
+		Name:       &Name,
+		Ip:         runRt.Instances[0].PrivateIpAddress,
+		InstanceId: runRt.Instances[0].InstanceId,
+		Status:     runRt.Instances[0].State.Name,
+		Key:        keyRt.KeyMaterial,
+	}, nil
+}
+
+----------------------------------------
+内容来自文件: ./controller/aga.go
+package controller
+
+----------------------------------------
+内容来自文件: ./controller/ec2.go
+package controller
+
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/yuzuki999/Aws-Panel/aws"
+	"github.com/yuzuki999/Aws-Panel/data"
+	"strconv"
+)
+
+func CreateEc2(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ami := c.PostForm("ami")
+	ec2Type := c.PostForm("ec2Type")
+	ec2Name := c.PostForm("ec2Name")
+	if secretName == "" || region == "" || ami == "" || ec2Type == "" || ec2Name == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	disk, _ := strconv.ParseInt(c.PostForm("disk"), 10, 64)
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	amiTmp, amiErr := client.GetAmiId(ami)
+	if amiErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  amiErr.Error(),
+		})
+		return
+	}
+	if amiTmp == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "Get ami ID error: Not found ami",
+		})
+		return
+	}
+	creRt, creErr := client.CreateEc2(amiTmp, ec2Type, ec2Name, disk)
+	if creErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  creErr.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"msg":  "创建成功",
+		"data": *creRt.Key,
+	})
+}
+
+func ListEc2(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	if secretName == "" || region == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	ec2Info, listErr := client.ListEc2()
+	if listErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  listErr.Error(),
+		})
+		return
+	}
+	var ec2Instances []*aws.Ec2Info
+	if ec2Info == nil {
+		ec2Instances = nil
+	} else {
+		for i := range ec2Info {
+			ec2Instances = append(ec2Instances, &aws.Ec2Info{
+				Name:       aws.CheckNameNil(ec2Info[i].Instances[0].Tags),
+				Status:     ec2Info[i].Instances[0].State.Name,
+				Type:       ec2Info[i].Instances[0].InstanceType,
+				InstanceId: ec2Info[i].Instances[0].InstanceId,
+				Ip:         ec2Info[i].Instances[0].PublicIpAddress,
+			})
+		}
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"data": ec2Instances,
+	})
+}
+
+func GetEc2Info(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ec2Id := c.PostForm("ec2Id")
+	if secretName == "" || region == "" || ec2Id == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	ec2Info, getErr := client.GetEc2Info(ec2Id)
+	if getErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  getErr.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"data": ec2Info,
+	})
+}
+
+func ChangeEc2Ip(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ec2Id := c.PostForm("ec2Id")
+	if secretName == "" || region == "" || ec2Id == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	newIp, changeErr := client.ChangeEc2Ip(ec2Id)
+	if changeErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  changeErr.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"msg":  "更换IP成功",
+		"data": newIp,
+	})
+}
+
+func StopEc2(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ec2Id := c.PostForm("ec2Id")
+	if secretName == "" || region == "" || ec2Id == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	stopErr := client.StopEc2(ec2Id)
+	if stopErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  stopErr.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"msg":  "启动失败",
+	})
+}
+
+func StartEc2(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ec2Id := c.PostForm("ec2Id")
+	if secretName == "" || region == "" || ec2Id == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+	}
+	startErr := client.StartEc2(ec2Id)
+	if startErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "启动成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  startErr.Error(),
+		})
+	}
+}
+
+func RebootEc2(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ec2Id := c.PostForm("ec2Id")
+	if secretName == "" || region == "" || ec2Id == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	rebootErr := client.RebootEc2(ec2Id)
+	if rebootErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "重启成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  rebootErr.Error(),
+		})
+	}
+}
+
+func DeleteEc2(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	region := c.PostForm("region")
+	ec2Id := c.PostForm("ec2Id")
+	if secretName == "" || region == "" || ec2Id == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+		return
+	}
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(region, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	delErr := client.DeleteEc2(ec2Id)
+	if delErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "删除成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  delErr.Error(),
+		})
+	}
+}
+
+----------------------------------------
+内容来自文件: ./controller/lightsail.go
+package controller
+
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/yuzuki999/Aws-Panel/aws"
+	"github.com/yuzuki999/Aws-Panel/data"
+)
+
+func GetRegions(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New("ap-northeast-1", secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	regions, GetRegionsErr := client.GetRegions()
+	if GetRegionsErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "查询成功",
+			"data": regions,
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  GetRegionsErr.Error(),
+		})
+	}
+}
+
+func CreateLightsail(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	zone := c.PostForm("zone")
+	availabilityZone := c.PostForm("availabilityZone")
+	blueprintId := c.PostForm("blueprintId")
+	bundleId := c.PostForm("bundleId")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	createRt, createErr := client.CreateLs(name, availabilityZone, blueprintId, bundleId)
+	if createErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "创建成功",
+			"data": *createRt.Key,
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  createErr.Error(),
+		})
+	}
+}
+
+func OpenLightsailPorts(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	secret, _ := data.GetSecret(username, secretName)
+	name := c.PostForm("name")
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	openErr := client.OpenLsPorts(name)
+	if openErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "开放成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  openErr.Error(),
+		})
+	}
+}
+
+func ListLightsail(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	listRt, listErr := client.ListLs()
+	if listErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  listErr.Error(),
+		})
+		return
+	}
+	var instances []*aws.LsInfo
+	if listRt == nil {
+		instances = append(instances, &aws.LsInfo{})
+	} else {
+		var tag *string
+		str := ""
+		tag = &str
+		for _, v := range listRt {
+			if len(v.Tags) > 0 {
+				tag = v.Tags[0].Value
+			}
+			instances = append(instances, &aws.LsInfo{
+				Name:       v.Name,
+				Type:       v.BundleId,
+				Ip:         v.PublicIpAddress,
+				SourceName: tag,
+				Status:     v.State.Name,
+			})
+		}
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"msg":  "查询成功",
+		"data": instances,
+	})
+}
+
+func GetLightsailInfo(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	info, GetInfoErr := client.GetLsInfo(name)
+	if GetInfoErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "删除成功",
+			"data": info,
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  GetInfoErr.Error(),
+		})
+	}
+}
+
+func StartLightsail(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	startErr := client.StartLs(name)
+	if startErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "启动成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  startErr.Error(),
+		})
+	}
+}
+
+func StopLightsail(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	stopErr := client.StopLs(name)
+	if stopErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "停止成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  stopErr.Error(),
+		})
+	}
+}
+
+func RebootLightsail(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	stopErr := client.RebootLs(name)
+	if stopErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "停止成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  stopErr.Error(),
+		})
+	}
+}
+
+func ChangeLightsailIp(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	changeIpErr := client.ChangeLsIp(name, zone)
+	if changeIpErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "更换IP成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  changeIpErr.Error(),
+		})
+	}
+}
+
+func DeleteLightsail(c *gin.Context) {
+	zone := c.PostForm("zone")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secretName := c.PostForm("secretName")
+	name := c.PostForm("name")
+	IpName := c.PostForm("SourceName")
+	secret, _ := data.GetSecret(username, secretName)
+	client, newErr := aws.New(zone, secret.SecretId, secret.Secret, "")
+	if newErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  newErr.Error(),
+		})
+		return
+	}
+	startErr := client.DeleteLs(name, IpName)
+	if startErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "删除成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  startErr.Error(),
+		})
+	}
+}
+
+----------------------------------------
+内容来自文件: ./controller/mail.go
+package controller
+
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/yuzuki999/Aws-Panel/data"
+	"github.com/yuzuki999/Aws-Panel/mail"
+	"github.com/yuzuki999/Aws-Panel/session"
+	"math/rand"
+	"strconv"
+)
+
+func SendMailVerify(c *gin.Context) {
+	email := c.PostForm("email")
+	to := c.PostForm("to")
+	config := data.GetMailConfig()
+	if config.EmailVerity == 1 {
+		if session.GetMailLast(email) != "" {
+			c.JSON(400, gin.H{
+				"code": 400,
+				"msg":  "发送间隔太短，请稍后再试",
+			})
+		} else {
+			code := strconv.Itoa(100000 + rand.Intn(999999-100000+1))
+			session.CreateMailCode(email, code)
+			sendErr := mail.SendMail(config.Email, to, code)
+			if sendErr == nil {
+				c.JSON(200, gin.H{
+					"code": 200,
+					"msg":  "发送成功",
+				})
+			}
+		}
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "未开启邮箱验证",
+		})
+	}
+}
+
+----------------------------------------
+内容来自文件: ./controller/quota.go
+package controller
+
+----------------------------------------
+内容来自文件: ./controller/secret.go
+package controller
+
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/yuzuki999/Aws-Panel/data"
+)
+
+func AddSecret(c *gin.Context) {
+	username := GetLoginUser(c)
+	name := c.PostForm("name")
+	id := c.PostForm("id")
+	secret := c.PostForm("secret")
+	if name == "" || id == "" || secret == "" {
+		c.JSON(200, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+	}
+	if username == "" {
+		return
+	}
+	addErr := data.AddSecret(username, name, id, secret)
+	if addErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "添加成功",
+		})
+	} else {
+		c.JSON(200, gin.H{
+			"code": 400,
+			"msg":  addErr.Error(),
+		})
+		return
+	}
+}
+
+func ListSecret(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	secret, listErr := data.ListSecret(username)
+	if listErr == nil {
+		var tmp []map[string]string
+		for _, v := range secret {
+			tmp = append(tmp, map[string]string{
+				"name":   v.Name,
+				"id":     v.SecretId,
+				"secret": v.Secret,
+			})
+		}
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "查询成功",
+			"data": tmp,
+		})
+	}
+}
+
+func GetSecretInfo(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	name := c.PostForm("name")
+	if name == "" {
+		c.JSON(200, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+	}
+	secret, getErr := data.GetSecret(username, name)
+	if getErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "查询成功",
+			"data": secret,
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  getErr.Error(),
+		})
+	}
+}
+
+func DelSecret(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	name := c.PostForm("name")
+	if name == "" {
+		c.JSON(200, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+	}
+	delErr := data.DelSecret(username, name)
+	if delErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "删除成功",
+		})
+	} else {
+		c.JSON(200, gin.H{
+			"code": 400,
+			"msg":  delErr.Error(),
+		})
+		return
+	}
+}
+
+----------------------------------------
+内容来自文件: ./controller/session.go
+package controller
+
+import (
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
+)
+
+func GetSessionId(c *gin.Context) string {
+	s := sessions.Default(c)
+	id := s.Get("loginSession")
+	if id == nil {
+		return ""
+	}
+	return id.(string)
+}
+
+----------------------------------------
+内容来自文件: ./controller/user.go
+package controller
+
+import (
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+	"github.com/yuzuki999/Aws-Panel/data"
+	"github.com/yuzuki999/Aws-Panel/session"
+	"github.com/yuzuki999/Aws-Panel/utils"
+)
+
+func GetLoginUser(c *gin.Context) string {
+	username := session.GetSession(GetSessionId(c))
+	if username == "" {
+		c.JSON(401, gin.H{
+			"code": 401,
+			"msg":  "用户未登录",
+		})
+		return ""
+	}
+	return username
+}
+
+func LoginVerify(c *gin.Context) {
+	username := c.PostForm("username")
+	password := c.PostForm("password")
+	if username == "" || password == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+	}
+	loginErr := data.LoginVerify(username, utils.Md5Encode(password))
+	if loginErr == nil {
+		s := sessions.Default(c)
+		s.Set("loginSession", session.CreateSession(username, 0))
+		saveErr := s.Save()
+		if saveErr != nil {
+			log.Error("")
+		}
+		c.JSON(200, gin.H{
+			"code":    200,
+			"isAdmin": data.IsAdmin(username),
+			"msg":     "登录成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  loginErr.Error(),
+		})
+	}
+}
+
+func Register(c *gin.Context) {
+	username := c.PostForm("username")
+	email := c.PostForm("email")
+	password := c.PostForm("password")
+	if username == "" || password == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+	}
+	if data.IsEmailVerity() {
+		code := c.PostForm("code")
+		if code != session.GetMailCode(email) {
+			c.JSON(400, gin.H{
+				"code": 400,
+				"msg":  "验证码不正确或已失效",
+			})
+			return
+		}
+	}
+	registerErr := data.Register(username, email, utils.Md5Encode(password))
+	if registerErr == nil {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "注册成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  registerErr.Error(),
+		})
+	}
+}
+
+func ChangeUsername(c *gin.Context) {
+	username := GetLoginUser(c)
+	oldName := c.PostForm("oldUsername")
+	newName := c.PostForm("newUsername")
+	password := c.PostForm("password")
+	if username == "" {
+		return
+	}
+	err := data.ChangeUsername(oldName, newName, password)
+	Logout(c)
+	if err != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  err.Error(),
+		})
+	} else {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "修改成功",
+		})
+	}
+}
+
+func ChangePassword(c *gin.Context) {
+	username := GetLoginUser(c)
+	oldPassword := c.PostForm("oldPassword")
+	newPassword := c.PostForm("newPassword")
+	if oldPassword == "" || newPassword == "" {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  "信息填写不完整",
+		})
+	}
+	if username == "" {
+		return
+	}
+	changeErr := data.ChangePassword(username, utils.Md5Encode(oldPassword), utils.Md5Encode(newPassword))
+	if changeErr == nil {
+		s := sessions.Default(c)
+		s.Clear()
+		_ = s.Save()
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  "修改成功",
+		})
+	} else {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  changeErr.Error(),
+		})
+	}
+}
+
+func GetUserInfo(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"msg":  "获取成功",
+		"name": username,
+	})
+}
+
+func Logout(c *gin.Context) {
+	id := GetSessionId(c)
+	session.DeleteSession(id)
+	s := sessions.Default(c)
+	s.Clear()
+	_ = s.Save()
+	c.JSON(200, gin.H{
+		"code": 200,
+		"msg":  "退出成功",
+	})
+}
+
+func IsAdmin(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	if data.IsAdmin(username) {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  true,
+		})
+	} else {
+		c.JSON(200, gin.H{
+			"code": 200,
+			"msg":  false,
+		})
+	}
+}
+
+func DeleteUser(c *gin.Context) {
+	user := c.PostForm("username")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	if data.IsAdmin(username) {
+		err := data.DeleteUser(user)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"code": 400,
+				"msg":  err.Error(),
+			})
+		} else {
+			c.JSON(200, gin.H{
+				"code": 200,
+				"msg":  "删除成功",
+			})
+		}
+	} else {
+		c.JSON(403, gin.H{
+			"code": 403,
+			"msg":  "没有权限",
+		})
+	}
+}
+
+func BanUser(c *gin.Context) {
+	user := c.PostForm("username")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	if data.IsAdmin(username) {
+		err := data.BanUser(user)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"code": 400,
+				"msg":  err.Error(),
+			})
+		} else {
+			c.JSON(200, gin.H{
+				"code": 200,
+				"msg":  "封禁成功",
+			})
+		}
+	} else {
+		c.JSON(403, gin.H{
+			"code": 403,
+			"msg":  "没有权限",
+		})
+	}
+}
+
+func UnBanUser(c *gin.Context) {
+	user := c.PostForm("username")
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	if data.IsAdmin(username) {
+		err := data.UnBanUser(user)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"code": 400,
+				"msg":  err.Error(),
+			})
+		} else {
+			c.JSON(200, gin.H{
+				"code": 200,
+				"msg":  "解封成功",
+			})
+		}
+	} else {
+		c.JSON(403, gin.H{
+			"code": 403,
+			"msg":  "没有权限",
+		})
+	}
+}
+
+func GetUserList(c *gin.Context) {
+	username := GetLoginUser(c)
+	if username == "" {
+		return
+	}
+	list, listErr := data.GetUserList()
+	if listErr != nil {
+		c.JSON(400, gin.H{
+			"code": 400,
+			"msg":  listErr.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"code": 200,
+		"data": list,
+	})
+}
+
+----------------------------------------
+内容来自文件: ./data/config.go
+package data
+
+import "gorm.io/gorm"
+
+type Config struct {
+	gorm.Model
+	EmailVerity int // 0 off,1 on
+	MailHost    string
+	Port        int
+	Email       string
+	Password    string
+}
+
+func SaveMailConfig(host, email, password string, enable, port int) {
+	config := Config{}
+	config.EmailVerity = enable
+	config.MailHost = host
+	config.Port = port
+	config.Email = email
+	config.Password = password
+	Db.Save(&config)
+}
+
+func GetMailConfig() *Config {
+	config := &Config{}
+	Db.First(config)
+	return config
+}
+
+func IsEmailVerity() bool {
+	config := &Config{}
+	Db.First(config)
+	if config.EmailVerity == 1 {
+		return true
+	}
+	return false
+}
+
+----------------------------------------
+内容来自文件: ./data/data.go
+package data
+
+import (
+	"fmt"
+	log "github.com/sirupsen/logrus"
+	"github.com/yuzuki999/Aws-Panel/utils"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+var Db *gorm.DB
+
+func DbInit(path string) error {
+	if utils.IsNotFound(path) {
+		defer func() {
+			CreateAdminUser()
+			log.Info("Done.Default account: admin password: admin123456")
+		}()
+	}
+	db, openErr := gorm.Open(sqlite.Open(path), &gorm.Config{})
+	if openErr != nil {
+		return fmt.Errorf("open db error: %v", openErr)
+	}
+	err := db.AutoMigrate(UserData{}, AwsSecret{})
+	if err != nil {
+		return fmt.Errorf("AutoMigrate error: %v", err)
+	}
+	Db = db
+	return nil
+}
+
+----------------------------------------
+内容来自文件: ./data/secret.go
+package data
+
+import (
+	"errors"
+	"gorm.io/gorm"
+	"strconv"
+)
+
+type AwsSecret struct {
+	gorm.Model
+	UserId   string
+	Name     string
+	SecretId string
+	Secret   string
+}
+
+func AddSecret(username string, name, Id, Secret string) error {
+	user := UserData{}
+	secret := AwsSecret{}
+	Db.Where("Username = ?", username).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户不存在")
+	}
+	Db.Where("user_id = ? and Name = ?", user.ID, name).First(&secret)
+	if secret.ID != 0 {
+		return errors.New("密钥已存在")
+	}
+	Db.Create(&AwsSecret{
+		Name:     name,
+		SecretId: Id,
+		Secret:   Secret,
+		UserId:   strconv.Itoa(int(user.ID)),
+	})
+	return nil
+}
+
+func ListSecret(username string) ([]AwsSecret, error) {
+	var user UserData
+	var secrets []AwsSecret
+	Db.Where("Username = ?", username).First(&user)
+	if user.ID == 0 {
+		return nil, errors.New("用户不存在")
+	}
+	Db.Where("user_id = ?", user.ID).Find(&secrets)
+	return secrets, nil
+}
+
+func DelSecret(username string, name string) error {
+	var user UserData
+	var secret AwsSecret
+	Db.Where("Username = ?", username).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户不存在")
+	}
+	Db.Where("user_id = ? and Name = ?", user.ID, name).First(&secret)
+	if secret.ID == 0 {
+		return errors.New("密钥不存在")
+	}
+	Db.Delete(&secret)
+	return nil
+}
+
+func GetSecret(username string, name string) (*AwsSecret, error) {
+	var user UserData
+	var secret AwsSecret
+	Db.Where("Username = ?", username).First(&user)
+	if user.ID == 0 {
+		return nil, errors.New("用户不存在")
+	}
+	Db.Where("user_id = ? and Name = ?", user.ID, name).First(&secret)
+	if secret.ID == 0 {
+		return nil, errors.New("密钥不存在")
+	}
+	return &secret, nil
+}
+
+----------------------------------------
+内容来自文件: ./data/user.go
+package data
+
+import (
+	"errors"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/yuzuki999/Aws-Panel/utils"
+	"gorm.io/gorm"
+)
+
+type UserData struct {
+	gorm.Model
+	Status   int    `gorm:"Status"` //0 正常,1 封禁
+	Username string `gorm:"Username"`
+	Email    string `gorm:"Email"`
+	Password string `gorm:"Password"`
+	IsAdmin  int    `gorm:"IsAdmin"` //0 否,1 是
+}
+
+func LoginVerify(Username string, PasswordMd5 string) error {
+	var user UserData
+	Db.Where("Username = ? and password = ?", Username, PasswordMd5).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户名或密码错误")
+	}
+	if user.Status == 1 {
+		return errors.New("用户已封禁")
+	}
+	return nil
+}
+
+func Register(Username, Email, PasswordMd5 string) error {
+	var user UserData
+	Db.Where("Username = ?", Username).First(&user)
+	if user.ID != 0 {
+		return errors.New("用户已存在")
+	}
+	user.Username = Username
+	user.Email = Email
+	user.Password = PasswordMd5
+	user.Status = 0
+	Db.Create(&user)
+	return nil
+}
+
+func ChangeUsername(OldUsername, NewUsername, Password string) error {
+	var user UserData
+	Db.Where("Username = ? and Password = ?", OldUsername, Password)
+	if user.ID == 0 {
+		return errors.New("用户名或密码错误")
+	}
+	user.Username = NewUsername
+	Db.Save(&user)
+	return nil
+}
+
+func ChangePassword(username string, OldPasswordMd5, NewPasswordMd5 string) error {
+	var user UserData
+	Db.Where("Username = ? and password = ?", username, OldPasswordMd5).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户不存在或密码错误")
+	}
+	user.Password = NewPasswordMd5
+	Db.Save(&user)
+	return nil
+}
+
+func CreateAdminUser() {
+	var user UserData
+	Db.Where("Username = ?", "admin").First(&user)
+	if user.ID != 0 {
+		return
+	}
+	user.Username = "admin"
+	user.Password = utils.Md5Encode("admin123456")
+	user.Status = 0
+	user.IsAdmin = 1
+	Db.Create(&user)
+}
+
+func IsAdmin(Username string) bool {
+	var user UserData
+	Db.Where("Username = ?", Username).First(&user)
+	if user.ID == 0 {
+		return false
+	}
+	if user.IsAdmin == 1 {
+		return true
+	}
+	return false
+}
+
+func DeleteUser(Username string) error {
+	var user UserData
+	Db.Where("Username = ?", Username).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户不存在")
+	}
+	if user.IsAdmin == 1 {
+		return errors.New("不能删除管理员账户")
+	}
+	Db.Delete(&user)
+	return nil
+}
+
+func BanUser(Username string) error {
+	var user UserData
+	Db.Where("Username = ?", Username).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户不存在")
+	}
+	if user.IsAdmin == 1 {
+		return errors.New("不能封禁管理员账户")
+	}
+	if user.Status == 0 {
+		user.Status = 1
+		Db.Save(&user)
+	} else {
+		return errors.New("该用户已被封禁")
+	}
+	return nil
+}
+
+func UnBanUser(Username string) error {
+	var user UserData
+	Db.Where("Username = ?", Username).First(&user)
+	if user.ID == 0 {
+		return errors.New("用户不存在")
+	}
+	if user.IsAdmin == 1 {
+		return errors.New("不能解封管理员账户")
+	}
+	if user.Status == 1 {
+		user.Status = 0
+		Db.Save(&user)
+	} else {
+		return errors.New("该用户未被封禁")
+	}
+	return nil
+}
+
+type UserInfo struct {
+	UserName string
+	Status   int
+	IsAdmin  int
+}
+
+func GetUserList() ([]UserInfo, error) {
+	var u []UserData
+	Db.Find(&u)
+	if len(u) == 0 {
+		return nil, errors.New("未找到任何用户")
+	}
+	var users []UserInfo
+	for i := range u {
+		users = append(users, UserInfo{
+			UserName: u[i].Username,
+			Status:   u[i].Status,
+			IsAdmin:  u[i].IsAdmin,
+		})
+	}
+	return users, nil
+}
+
+----------------------------------------
+内容来自文件: ./mail/mail.go
+package mail
+
+import (
+	"gopkg.in/gomail.v2"
+	"strings"
+)
+
+const tmpl = "<div style=\"background: #eee\">\n    <table width=\"600\" border=\"0\" align=\"center\" cellpadding=\"0\" cellspacing=\"0\">\n        <tbody>\n        <tr>\n            <td>\n                <div style=\"background:#fff\">\n                    <table width=\"100%\" border=\"0\" cellspacing=\"0\" cellpadding=\"0\">\n                        <thead>\n                        <tr>\n                            <td valign=\"middle\" style=\"padding-left:30px;background-color:#415A94;color:#fff;padding:20px 40px;font-size: 21px;\">{{$name}}</td>\n                        </tr>\n                        </thead>\n                        <tbody>\n                        <tr style=\"padding:40px 40px 0 40px;display:table-cell\">\n                            <td style=\"font-size:24px;line-height:1.5;color:#000;margin-top:40px\">邮箱验证码</td>\n                        </tr>\n                        <tr>\n                            <td style=\"font-size:14px;color:#333;padding:24px 40px 0 40px\">\n                                尊敬的用户您好！\n                                <br />\n                                <br />\n                                您的验证码是：{{$code}}，请在 5 分钟内进行验证。如果该验证码不为您本人申请，请无视。\n                            </td>\n                        </tr>\n                        <tr style=\"padding:40px;display:table-cell\">\n                        </tr>\n                        </tbody>\n                    </table>\n                </div>\n                <div>\n                    <table width=\"100%\" border=\"0\" cellspacing=\"0\" cellpadding=\"0\">\n                        <tbody>\n                        <tr>\n                            <td style=\"padding:20px 40px;font-size:12px;color:#999;line-height:20px;background:#f7f7f7\"><a href=\"https://github.com/yuzuki999/AWS-Panel\" style=\"font-size:14px;color:#929292\">AWS-Panel</a></td>\n                        </tr>\n                        </tbody>\n                    </table>\n                </div></td>\n        </tr>\n        </tbody>\n    </table>\n</div>"
+
+var mail *gomail.Dialer
+
+func InitMail(host, username, password string, port int) {
+	mail = gomail.NewDialer(host, port, username, password)
+}
+
+func SendMail(form, to, code string) error {
+	m := gomail.NewMessage()
+	m.SetHeader("From", form)
+	m.SetHeader("To", to)
+	m.SetHeader("Subject", "邮件验证码")
+	m.SetBody("text/html", strings.ReplaceAll(tmpl,
+		"{{$code}}", code))
+	err := mail.DialAndSend(m)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+----------------------------------------
+内容来自文件: ./mail/mail_test.go
+package mail
+
+----------------------------------------
+内容来自文件: ./router/router.go
+package router
+
+import (
+	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
+	"github.com/gin-gonic/gin"
+	"github.com/yuzuki999/Aws-Panel/controller"
+)
+
+type Router struct {
+	router *gin.Engine
+}
+
+func New() *Router {
+	gin.SetMode(gin.ReleaseMode)
+	return &Router{router: gin.Default()}
+}
+
+func (p *Router) LoadRoute() {
+	store := cookie.NewStore([]byte("loginSession"))
+	/*store, err := redis.NewStore(10, "tcp", "127.0.0.1:6379", "", []byte("loginuser"))
+	if err != nil {
+		log.Error("Create session error: ", err)
+	}*/
+	p.router.Use(sessions.Sessions("loginSession", store))
+	config := cors.DefaultConfig()
+	config.AllowOrigins = []string{"http://127.0.0.1:8080"}
+	config.AllowCredentials = true
+	p.router.Use(cors.New(config))
+
+	//User
+	p.router.POST("/api/v1/User/Login", controller.LoginVerify)
+	p.router.POST("/api/v1/User/Register", controller.Register)
+	//p.router.POST("/api/v1/user/SendMailVerify", controller.SendMailVerify)
+	p.router.POST("/api/v1/User/ChangeUsername", controller.ChangeUsername)
+	p.router.POST("/api/v1/User/ChangePassword", controller.ChangePassword)
+	p.router.GET("/api/v1/User/Info", controller.GetUserInfo)
+	p.router.GET("/api/v1/User/Logout", controller.Logout)
+	p.router.GET("/api/v1/User/IsAdmin", controller.IsAdmin)
+	//Admin Only
+	p.router.GET("/api/v1/User/List", controller.GetUserList)
+	p.router.POST("/api/v1/User/Delete", controller.DeleteUser)
+	p.router.POST("/api/v1/User/Ban", controller.BanUser)
+	p.router.POST("/api/v1/User/UnBan", controller.UnBanUser)
+
+	//Secret
+	p.router.POST("/api/v1/Secret/Add", controller.AddSecret)
+	p.router.GET("/api/v1/Secret/List", controller.ListSecret)
+	p.router.POST("/api/v1/Secret/Delete", controller.DelSecret)
+	p.router.POST("/api/v1/Secret/Info", controller.GetSecretInfo)
+
+	//Ec2
+	p.router.POST("/api/v1/Ec2/Create", controller.CreateEc2)
+	p.router.POST("/api/v1/Ec2/List", controller.ListEc2)
+	p.router.POST("/api/v1/Ec2/Info", controller.GetEc2Info)
+	p.router.POST("/api/v1/Ec2/ChangeIp", controller.ChangeEc2Ip)
+	p.router.POST("/api/v1/Ec2/Stop", controller.StopEc2)
+	p.router.POST("/api/v1/Ec2/Start", controller.StartEc2)
+	p.router.POST("/api/v1/Ec2/Reboot", controller.RebootEc2)
+	p.router.POST("/api/v1/Ec2/Delete", controller.DeleteEc2)
+
+	//Lightsail
+	p.router.POST("/api/v1/LightSail/GetRegions", controller.GetRegions)
+	p.router.POST("/api/v1/LightSail/Create", controller.CreateLightsail)
+	p.router.POST("/api/v1/LightSail/OpenPorts", controller.OpenLightsailPorts)
+	p.router.POST("/api/v1/LightSail/GetBlueprintId")
+	p.router.POST("/api/v1/LightSail/Info", controller.GetLightsailInfo)
+	p.router.POST("/api/v1/LightSail/List", controller.ListLightsail)
+	p.router.POST("/api/v1/LightSail/ChangeIp", controller.ChangeLightsailIp)
+	p.router.POST("/api/v1/LightSail/Stop", controller.StopLightsail)
+	p.router.POST("/api/v1/LightSail/Start", controller.StartLightsail)
+	p.router.POST("/api/v1/LightSail/Reboot", controller.RebootLightsail)
+	p.router.POST("/api/v1/LightSail/Delete", controller.DeleteLightsail)
+
+	//Quota
+	p.router.POST("/api/v1/Quota/Get")
+	p.router.GET("/api/v1/Quota/ListChangeRequest")
+	p.router.POST("/api/v1/Quota/ChangeQuota")
+
+	//Page
+	p.router.Static("/js", "./web/js")
+	p.router.Static("/css", "./web/css")
+	p.router.Static("/img", "./web/img")
+	//p.router.StaticFile("/","./web/index.html")
+	p.router.StaticFile("/favicon.ico", "./web/favicon.ico")
+	p.router.NoRoute(func(c *gin.Context) {
+		c.File("./web/index.html")
+	})
+}
+
+func (p *Router) Start() error {
+	runErr := p.router.Run(":8011")
+	if runErr != nil {
+		return runErr
+	}
+	return nil
+}
+
+----------------------------------------
+内容来自文件: ./session/session.go
+package session
+
+import (
+	"errors"
+	"math/rand"
+	"strconv"
+	"sync"
+	"time"
+)
+
+var Session = map[string]string{}
+var lock sync.RWMutex
+
+func CreateMailCode(email, value string) {
+	ECode := email + "Code"
+	ELastSend := email + "LastSend"
+	lock.Lock()
+	Session[ECode] = value
+	Session[ELastSend] = "f"
+	lock.Unlock()
+	SetExpired(ECode, 300)
+	SetExpired(ELastSend, 60)
+}
+
+func GetMailCode(email string) string {
+	email += "Code"
+	if _, ok := Session[email]; ok {
+		return Session[email]
+	}
+	return ""
+}
+func GetMailLast(email string) string {
+	email += "CodeLastSend"
+	if _, ok := Session[email]; ok {
+		return Session[email]
+	}
+	return ""
+}
+
+func CreateSession(value string, expired int) string {
+	id := strconv.Itoa(time.Now().Second() * rand.Int())
+	lock.Lock()
+	if _, ok := Session[id]; ok {
+		CreateSession(value, expired)
+	} else {
+		Session[id] = value
+	}
+	lock.Unlock()
+	if expired != 0 {
+		SetExpired(id, expired)
+	}
+	return id
+}
+
+func GetSession(id string) string {
+	if _, ok := Session[id]; ok {
+		return Session[id]
+	} else {
+		return ""
+	}
+}
+
+func ChangeSession(id string, value string) error {
+	if _, ok := Session[id]; ok {
+		lock.Lock()
+		Session[id] = value
+		lock.Unlock()
+		return nil
+	}
+	return errors.New("not found session")
+}
+
+func DeleteSession(id string) {
+	lock.Lock()
+	delete(Session, id)
+	lock.Unlock()
+}
+
+func SetExpired(id string, expired int) {
+	go func() {
+		time.Sleep(time.Duration(expired) * time.Second)
+		lock.Lock()
+		DeleteSession(id)
+		lock.Unlock()
+	}()
+}
+
+----------------------------------------
+内容来自文件: ./utils/doubleclick.go
+//go:build !windows
+// +build !windows
+
+package utils
+
+func RunningByDoubleClick() bool {
+	return false
+}
+
+----------------------------------------
+内容来自文件: ./utils/doubleclick_win.go
+//go:build windows
+// +build windows
+
+package utils
+
+import (
+	"syscall"
+	"unsafe"
+)
+
+func RunningByDoubleClick() bool {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	lp := kernel32.NewProc("GetConsoleProcessList")
+	if lp != nil {
+		var ids [2]uint32
+		var maxCount uint32 = 2
+		ret, _, _ := lp.Call(uintptr(unsafe.Pointer(&ids)), uintptr(maxCount))
+		if ret > 1 {
+			return false
+		}
+	}
+	return true
+}
+
+----------------------------------------
+内容来自文件: ./utils/file.go
+package utils
+
+import "os"
+
+func IsNotFound(path string) bool {
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return true
+	} else {
+		return false
+	}
+
+}
+
+----------------------------------------
+内容来自文件: ./utils/md5.go
+package utils
+
+import (
+	"crypto/md5"
+)
+
+func Md5Encode(str string) string {
+	data := []byte(str)
+	has := md5.Sum(data)
+	return string(has[:])
+}
+
+----------------------------------------
+内容来自文件: ./web/babel.config.js
+module.exports = {
+    presets: [
+        '@vue/cli-plugin-babel/preset'
+    ]
+}
+
+----------------------------------------
+内容来自文件: ./web/package.json
+{
+  "name": "aws-panel",
+  "version": "0.3.6",
+  "private": true,
+  "scripts": {
+    "serve": "vue-cli-service serve",
+    "build": "vue-cli-service build",
+    "lint": "vue-cli-service lint"
+  },
+  "dependencies": {
+    "core-js": "^3.6.5",
+    "cors": "^2.8.5",
+    "vue": "^2.6.11",
+    "vue-cookie": "^1.1.4",
+    "vue-meta": "^2.4.0",
+    "vue-router": "^3.5.3",
+    "vuetify": "^2.4.0"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "~4.5.0",
+    "@vue/cli-plugin-eslint": "~4.5.0",
+    "@vue/cli-service": "~4.5.0",
+    "axios": "^0.18.1",
+    "babel-eslint": "^10.1.0",
+    "eslint": "^6.7.2",
+    "eslint-plugin-vue": "^6.2.2",
+    "sass": "~1.32.0",
+    "sass-loader": "^10.0.0",
+    "vue-cli-plugin-axios": "~0.0.4",
+    "vue-cli-plugin-vuetify": "~2.4.5",
+    "vue-template-compiler": "^2.6.11",
+    "vuetify-loader": "^1.7.0"
+  },
+  "eslintConfig": {
+    "root": true,
+    "env": {
+      "node": true
+    },
+    "extends": [
+      "plugin:vue/essential",
+      "eslint:recommended"
+    ],
+    "parserOptions": {
+      "parser": "babel-eslint"
+    },
+    "rules": {}
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ]
+}
+
+----------------------------------------
+内容来自文件: ./web/vue.config.js
+module.exports = {
+    transpileDependencies: [
+        'vuetify'
+    ]
+}
+
+----------------------------------------
+内容来自文件: ./web/index.html
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta content="IE=edge" http-equiv="X-UA-Compatible"><meta content="width=device-width,initial-scale=1" name="viewport"><link href="/favicon.ico" rel="icon"><title>AWS Panel</title><link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet"><link href="https://cdn.jsdelivr.net/npm/@mdi/font@latest/css/materialdesignicons.min.css" rel="stylesheet"><link href="/css/chunk-vendors.5d7786a1.css" rel="preload" as="style"><link href="/js/app.37759c91.js" rel="preload" as="script"><link href="/js/chunk-vendors.2545e11e.js" rel="preload" as="script"><link href="/css/chunk-vendors.5d7786a1.css" rel="stylesheet"></head><body><noscript><strong>We're sorry but aws-panel doesn't work properly without JavaScript enabled. Please enable it to continue.</strong></noscript><div id="app"></div><script src="/js/chunk-vendors.2545e11e.js"></script><script src="/js/app.37759c91.js"></script></body></html>
+----------------------------------------
+内容来自文件: ./web/favicon.ico
+无法读取文件: ./web/favicon.ico，错误: 'utf-8' codec can't decode byte 0xa8 in position 14: invalid start byte
+内容来自文件: ./web/.idea/.gitignore
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+# 基于编辑器的 HTTP 客户端请求
+/httpRequests/
+
+----------------------------------------
+内容来自文件: ./web/.idea/misc.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebPackConfiguration">
+    <option name="mode" value="DISABLED" />
+  </component>
+</project>
+----------------------------------------
+内容来自文件: ./web/.idea/modules.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/web.iml" filepath="$PROJECT_DIR$/.idea/web.iml" />
+    </modules>
+  </component>
+</project>
+----------------------------------------
+内容来自文件: ./web/.idea/vcs.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
+  </component>
+</project>
+----------------------------------------
+内容来自文件: ./web/.idea/web.iml
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/temp" />
+      <excludeFolder url="file://$MODULE_DIR$/.tmp" />
+      <excludeFolder url="file://$MODULE_DIR$/tmp" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
+----------------------------------------
+内容来自文件: ./web/.idea/inspectionProfiles/Project_Default.xml
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="Eslint" enabled="true" level="WARNING" enabled_by_default="true" />
+  </profile>
+</component>
+----------------------------------------
+内容来自文件: ./web/public/favicon.ico
+无法读取文件: ./web/public/favicon.ico，错误: 'utf-8' codec can't decode byte 0xa8 in position 14: invalid start byte
+内容来自文件: ./web/public/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta content="IE=edge" http-equiv="X-UA-Compatible">
+    <meta content="width=device-width,initial-scale=1.0" name="viewport">
+    <link href="<%= BASE_URL %>favicon.ico" rel="icon">
+    <title>AWS Panel</title>
+    <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@latest/css/materialdesignicons.min.css" rel="stylesheet">
+</head>
+<body>
+<noscript>
+    <strong>We're sorry but <%= htmlWebpackPlugin.options.title %> doesn't work properly without JavaScript enabled.
+        Please enable it to continue.</strong>
+</noscript>
+<div id="app"></div>
+<!-- built files will be auto injected -->
+</body>
+</html>
+
+----------------------------------------
+内容来自文件: ./web/src/App.vue
+<template>
+  <v-app>
+    <v-navigation-drawer v-model="drawer" app clipped>
+      <v-list
+          nav
+          dense
+      >
+
+        <v-list-item-group active-class="nattier-blue--text text--accent-4">
+          <v-list-item onclick="window.location.href='/'">
+            <v-list-item-icon>
+              <v-icon>mdi-home</v-icon>
+            </v-list-item-icon>
+            <v-list-item-title>主页｜Home</v-list-item-title>
+          </v-list-item>
+
+          <v-list-item onclick="window.location.href='/Instance'">
+            <v-list-item-icon>
+              <v-icon>mdi-server</v-icon>
+            </v-list-item-icon>
+            <v-list-item-title>实例｜Instances</v-list-item-title>
+          </v-list-item>
+
+          <!--<v-list-item onclick="window.location.href='/Quota'">
+            <v-list-item-icon>
+              <v-icon>mdi-car-speed-limiter</v-icon>
+            </v-list-item-icon>
+            <v-list-item-title>配额 ｜ Quota</v-list-item-title>
+          </v-list-item>-->
+
+          <v-list-item onclick="window.location.href='/User'">
+            <v-list-item-icon>
+              <v-icon>mdi-account-details</v-icon>
+            </v-list-item-icon>
+            <v-list-item-title>用户｜User</v-list-item-title>
+          </v-list-item>
+          <v-list-item v-if="this.$cookie.get('isAdmin')==='true'" onclick="window.location.href='/Manger'">
+            <v-list-item-icon>
+              <v-icon>mdi-information-outline</v-icon>
+            </v-list-item-icon>
+            <v-list-item-title>管理 | Manger</v-list-item-title>
+          </v-list-item>
+        </v-list-item-group>
+      </v-list>
+    </v-navigation-drawer>
+
+    <v-app-bar app clipped-left color="white">
+      <v-app-bar-nav-icon @click="drawer = !drawer"></v-app-bar-nav-icon>
+
+      <v-app-bar-title>
+        <v-icon large>mdi-aws</v-icon>
+        AWS Panel
+      </v-app-bar-title>
+
+      <v-spacer></v-spacer>
+
+      <v-btn v-if="this.$cookie.get('loginSession')==null" href="/Register" text>
+        <span class="mr-2">注册</span>
+        <v-icon small>mdi-account-plus</v-icon>
+      </v-btn>
+      <v-btn v-else href="/User" text>
+        <span class="mr-2">用户</span>
+        <v-icon small>mdi-account-details</v-icon>
+      </v-btn>
+
+      <v-btn v-if="this.$cookie.get('loginSession')==null" href="/Login" text>
+        <span class="mr-2">登陆</span>
+        <v-icon small>mdi-account-key</v-icon>
+      </v-btn>
+      <v-btn v-else text @click="logout()">
+        <span class="mr-2">注销</span>
+        <v-icon small>mdi-logout</v-icon>
+      </v-btn>
+
+    </v-app-bar>
+
+    <!-- 根据应用组件来调整你的内容 -->
+    <v-main>
+
+      <!-- 给应用提供合适的间距 -->
+      <v-container fluid>
+
+        <!-- 如果使用 vue-router -->
+        <router-view></router-view>
+      </v-container>
+    </v-main>
+  </v-app>
+</template>
+
+<script>
+import axios from './api'
+export default {
+  name: 'App',
+  data: () => ({
+    drawer: null,
+  }),
+  methods: {
+    logout() {
+      this.$cookie.delete('loginSession');
+      this.$cookie.delete('isAdmin');
+      axios.get("/api/v1/User/Logout")
+      this.$router.push('/Login')
+    },
+  },
+  mounted() {
+    if (this.$cookie.get('loginSession')!=null){
+      axios.get("/api/v1/User/IsAdmin").then(rsp=>{
+        if (this.$cookie.get('loginSession')!=null){
+          if (rsp.status===401){
+            this.$cookie.delete('loginSession');
+            location.reload()
+          }
+        }
+        if (rsp.data.msg===true){
+          if (this.$cookie.get('isAdmin')==null){
+            this.$cookie.set('isAdmin', 'true')
+            location.reload()
+          }
+        }else{
+          if (this.$cookie.get('isAdmin')!=null){
+            this.$cookie.delete('isAdmin')
+            location.reload()
+          }
+        }
+      })
+    }
+  }
+}
+</script>
+
+<style>
+</style>
+----------------------------------------
+内容来自文件: ./web/src/api.js
+import axios from 'axios';
+
+export default axios.create({
+    baseURL: ``,
+    withCredentials: true,
+    validateStatus: function (status) {
+        return status < 500;
+    }
+});
+----------------------------------------
+内容来自文件: ./web/src/main.js
+import Vue from 'vue'
+import App from './App.vue'
+import router from './router'
+import vuetify from "./plugins/vuetify";
+import vueMeta from 'vue-meta'
+import VueCookie from 'vue-cookie'
+
+//const VueCookie = require('')
+Vue.use(VueCookie,vueMeta)
+Vue.config.productionTip = false
+new Vue({
+    vuetify,
+    router,
+    render: h => h(App)
+}).$mount('#app')
+----------------------------------------
+内容来自文件: ./web/src/components/dialog.vue
+
+----------------------------------------
+内容来自文件: ./web/src/components/lightsail.vue
+<template>
+  <v-card>
+    <v-card-title>Lightsail实例</v-card-title>
+    <v-card-subtitle>Lightsail Instance</v-card-subtitle>
+    <v-card-text>
+      <v-row>
+        <v-col
+            cols="auto"
+        >
+          <v-select
+              v-model="zoneSelected"
+              :items="zone"
+              :rules="formRequired"
+              label="区域"
+              solo
+              dense
+              hide-details
+              @change="refreshLs"
+              required
+          ></v-select>
+        </v-col>
+        <v-col cols="auto">
+          <v-btn
+              color="info"
+              @click="createCheck"
+          >
+            创建
+          </v-btn>
+          <v-dialog
+              v-model="createDialog"
+              max-width="600px"
+          >
+            <v-card>
+              <v-card-title>
+                <span class="text-h5">创建Lightsail</span>
+              </v-card-title>
+              <v-card-text>
+                <v-container>
+                  <v-form ref="createLsForm">
+                    <v-row>
+                      <v-col
+                          cols="12"
+                      >
+                        <v-text-field
+                            v-model="lsName"
+                            :rules="formRequired"
+                            label="名称"
+                            required
+                        ></v-text-field>
+                      </v-col>
+                      <v-col cols="12">
+                        <v-select
+                            v-model="availabilityZoneSelected"
+                            :items="availabilityZone"
+                            :rules="formRequired"
+                            label="可用区"
+                        ></v-select>
+                      </v-col>
+                      <v-col
+                          cols="12"
+                      >
+                        <v-select
+                            v-model="bundleSelected"
+                            :items="bundle"
+                            :rules="formRequired"
+                            label="类型"
+                            required
+                        ></v-select>
+                      </v-col>
+                      <v-col
+                          cols="12"
+                      >
+                        <v-select
+                            v-model="blueprintSelected"
+                            :items="blueprint"
+                            :rules="formRequired"
+                            label="操作系统"
+                            required
+                        ></v-select>
+                      </v-col>
+                    </v-row>
+                  </v-form>
+                </v-container>
+              </v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn
+                    color="blue darken-1"
+                    text
+                    @click="createDialog = false"
+                >
+                  取消
+                </v-btn>
+                <v-btn
+                    color="blue darken-1"
+                    text
+                    @click="createLs"
+                >
+                  创建
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+          <v-dialog
+              v-model="sshKeyDialog"
+              max-width="600px"
+          >
+            <v-card>
+              <v-card-title>
+                <span class="text-h5">SSH密钥</span>
+              </v-card-title>
+              <v-card-text>
+                <v-textarea readonly v-model="sshKey"></v-textarea>
+              </v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn
+                    color="blue darken-1"
+                    text
+                    @click="copySshKey"
+                >
+                  复制
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+        </v-col>
+        <v-col cols="1">
+          <v-btn color="info" @click="refreshLs">刷新</v-btn>
+        </v-col>
+        <v-spacer></v-spacer>
+        <v-col cols="12">
+          <v-data-table
+              :footer-props="{
+              itemsPerPageText: '每页实例数',
+            }"
+              :headers="lsHeaders"
+              :items="lsInstances"
+              :items-per-page="5"
+              :loading="lsTableLoading"
+              loading-text="正在加载..."
+              class="elevation-1"
+              disable-sort
+          >
+            <template slot="no-data">
+              <div>无任何实例</div>
+            </template>
+            <template v-slot:item.Action="{ item }">
+              <v-tooltip bottom>
+                <template v-slot:activator="{ on, attrs }">
+                  <v-btn
+                      color="info"
+                      icon
+                      v-bind="attrs"
+                      @click="openInstancePorts(item)"
+                      v-on="on"
+                  >
+                    <v-icon>mdi-shield-lock-open</v-icon>
+                  </v-btn>
+                </template>
+                <span>开放端口</span>
+              </v-tooltip>
+              <v-tooltip bottom>
+                <template v-slot:activator="{ on, attrs }">
+                  <v-btn
+                      color="info"
+                      icon
+                      v-bind="attrs"
+                      @click="startInstance(item)"
+                      v-on="on"
+                  >
+                    <v-icon>mdi-play</v-icon>
+                  </v-btn>
+                </template>
+                <span>启动</span>
+              </v-tooltip>
+              <v-tooltip bottom>
+                <template v-slot:activator="{ on, attrs }">
+                  <v-btn
+                      color="info"
+                      icon
+                      v-bind="attrs"
+                      @click="stopInstance(item)"
+                      v-on="on"
+                  >
+                    <v-icon>mdi-stop</v-icon>
+                  </v-btn>
+                </template>
+                <span>停止</span>
+              </v-tooltip>
+
+              <v-tooltip bottom>
+                <template v-slot:activator="{ on, attrs }">
+                  <v-btn
+                      color="info"
+                      icon
+                      v-bind="attrs"
+                      @click="restartInstance(item)"
+                      v-on="on"
+                  >
+                    <v-icon>mdi-restart</v-icon>
+                  </v-btn>
+                </template>
+                <span>重启</span>
+              </v-tooltip>
+
+              <v-tooltip bottom>
+                <template v-slot:activator="{ on, attrs }">
+                  <v-btn
+                      color="info"
+                      icon
+                      v-bind="attrs"
+                      @click="deleteInstance(item)"
+                      v-on="on"
+                  >
+                    <v-icon>mdi-delete</v-icon>
+                  </v-btn>
+                </template>
+                <span>删除</span>
+              </v-tooltip>
+            </template>
+          </v-data-table>
+        </v-col>
+      </v-row>
+    </v-card-text>
+    <v-snackbar
+        v-model="message"
+    >
+      {{ messageText }}
+
+      <template v-slot:action="{ attrs }">
+        <v-btn
+            color="info"
+            text
+            v-bind="attrs"
+            @click="message = false"
+        >
+          Close
+        </v-btn>
+      </template>
+    </v-snackbar>
+    <v-overlay v-model="loading">
+      <v-progress-circular
+          indeterminate
+          size="64"
+      ></v-progress-circular>
+    </v-overlay>
+  </v-card>
+</template>
+
+<script>
+import axios from "axios"
+
+export default {
+  name: 'lightsail',
+  props: ['loading', 'message', 'messageText'],
+  data() {
+    return {
+      formRequired: [
+        v => !!v || "必填项！"
+      ],
+      secretName: '',
+      createDialog: false,
+      sshKeyDialog: false,
+      sshKey: "",
+      lsName: "",
+      zone: [
+        {text: 'Tokyo', value: 'ap-northeast-1a'},
+        {text: 'Seoul', value: 'ap-northeast-2a'},
+        {text: 'Singapore', value: 'ap-southeast-1a'}
+      ],
+      zoneSelected: "",
+      availabilityZone: [],
+      availabilityZoneSelected: "",
+      availabilityZoneStore: new Map(),
+      bundle: [
+        {text: 'Nano', value: 'nano_2_0'},
+        {text: 'Micro', value: 'micro_2_0'},
+        {text: 'Small', value: 'small_2_0'}
+      ],
+      bundleSelected: "",
+      blueprint: [
+        {text: 'Debian10', value: 'debian_10'},
+        {text: 'Ubuntu20.04', value: 'ubuntu_20_04'}
+      ],
+      blueprintSelected: "",
+      lsHeaders: [
+        {text: '操作', value: 'Action'},
+        {text: '名称', value: 'Name'},
+        {text: '状态', value: 'Status'},
+        {text: '类型', value: 'Type'},
+        {text: 'IP', value: 'Ip'}
+      ],
+      lsInstances: [],
+      lsTableLoading: false
+    }
+  },
+  methods: {
+    createCheck() {
+      if (this.secretName === "" || this.zoneSelected === "") {
+        this.messageText = '请先选择密钥和区域'
+        this.message = true
+      } else {
+        this.createDialog = true
+      }
+    },
+    createLs() {
+      if (this.$refs.createLsForm.validate()) {
+        this.createDialog = false
+        this.loading = true
+        let data = new FormData()
+        data.append("secretName", this.secretName)
+        data.append("name", this.lsName)
+        data.append("zone", this.zoneSelected)
+        data.append("availabilityZone",this.availabilityZoneSelected)
+        data.append("bundleId", this.bundleSelected)
+        data.append("blueprintId", this.blueprintSelected)
+        axios.post("/api/v1/LightSail/Create", data, {withCredentials: true}).then(rsp => {
+          if (rsp.data.code === 200) {
+            this.messageText = "已添加至创建队列"
+            this.sshKey=rsp.data.data
+            this.sshKeyDialog = true
+          }else{
+            this.messageText = "操作失败"
+          }
+        }).catch(rsp => {
+          this.messageText = "操作失败"
+          if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+        }).finally(() => {
+          this.$refs.createLsForm.reset()
+          this.loading = false
+          this.message = true
+        })
+      }
+    },
+    copySshKey() {
+      this.sshKeyDialog = false
+      navigator.clipboard.writeText(this.sshKey).then(() => {
+        this.messageText = '已复制到剪贴板'
+        this.message = true
+        this.sshKey = ''
+        this.refreshLs()
+      })
+    },
+    getRegions() {
+      this.availabilityZoneStore.clear()
+      let data = new FormData()
+      data.append("secretName", this.secretName)
+      axios.post("/api/v1/LightSail/GetRegions", data, {withCredentials: true}).then(rsp => {
+        if (rsp.data.code === 200) {
+          let tmp = [];
+          rsp.data.data.forEach((item) => {
+            tmp.push({text: item.DisplayName, value: item.Name})
+            if (item.AvailabilityZones.length === 0) {
+              item.AvailabilityZones.push({"ZoneName": item.Name + "a"})
+            }
+            this.availabilityZoneStore.set(item.Name, item.AvailabilityZones)
+          })
+          this.zone = tmp
+        }
+      })
+    },
+    refreshLs() {
+      if ((this.zoneSelected === '') || (this.secretName === '')) {
+        return
+      }
+      this.availabilityZone = []
+      this.availabilityZoneStore.get(this.zoneSelected).forEach(item => {
+        this.availabilityZone.push(item.ZoneName)
+      })
+      this.lsTableLoading = true
+      let data = new FormData()
+      data.append("secretName", this.secretName)
+      data.append("zone", this.zoneSelected)
+      axios.post("/api/v1/LightSail/List", data, {withCredentials: true}).then(rsp => {
+        if (rsp.data.code === 200) {
+          if (rsp.data.data == null) {
+            this.lsInstances = []
+          } else {
+            this.lsInstances = rsp.data.data
+          }
+        } else{
+            this.messageText = "操作失败"
+          }
+      }).catch(rsp => {
+        this.lsInstances = []
+        if (rsp.response.data.msg !== undefined) {
+          console.error(rsp.response.data.msg)
+        }
+        this.messageText = "操作失败"
+      }).finally(() => {
+        this.lsTableLoading = false
+      })
+    },
+    openInstancePorts(item){
+      if (item.Status !== '') {
+        this.loading = true
+        let data = new FormData()
+        data.append('secretName', this.secretName)
+        data.append('name', item.Name)
+        data.append("zone", this.zoneSelected)
+        axios.post("/api/v1/LightSail/OpenPorts", data,
+            {withCredentials: true}).then(rsp => {
+          if (rsp.data.code === 200) {
+            this.messageText = "开放端口成功"
+          }else{
+            this.messageText = "操作失败"
+          }
+        }).catch(rsp => {
+          if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+          this.messageText = "操作失败"
+        }).finally(() => {
+          this.loading = false
+          this.message = true
+        })
+      }
+    },
+    startInstance(item) {
+        if (item.Status !== '') {
+        this.loading = true
+        let data = new FormData()
+        data.append('secretName', this.secretName)
+        data.append('name', item.Name)
+        data.append("zone", this.zoneSelected)
+        axios.post("/api/v1/LightSail/Start", data,
+            {withCredentials: true}).then(rsp => {
+          if (rsp.data.code === 200) {
+            this.messageText = "已添加至启动队列"
+          }else{
+            this.messageText = "操作失败"
+          }
+        }).catch(rsp => {
+          if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+          this.messageText = "操作失败"
+        }).finally(() => {
+          this.loading = false
+          this.message = true
+        })
+      }
+    },
+    stopInstance(item) {
+      if (item.Status !== '') {
+        this.loading = true
+        let data = new FormData()
+        data.append('secretName', this.secretName)
+        data.append('name', item.Name)
+        data.append("zone", this.zoneSelected)
+        axios.post("/api/v1/LightSail/Stop", data,
+            {withCredentials: true}).then(rsp => {
+          if (rsp.data.code === 200) {
+            this.messageText = "已添加至停止队列"
+          }else{
+            this.messageText = "操作失败"
+          }
+        }).catch(rsp => {
+          if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+          this.messageText = "操作失败"
+        }).finally(() => {
+          this.message = true
+          this.loading = false
+        })
+      }
+    },
+    restartInstance(item) {
+      if (item.Status !== '') {
+        this.loading = true
+        let data = new FormData()
+        data.append('secretName', this.secretName)
+        data.append('name', item.Name)
+        data.append("zone", this.zoneSelected)
+        axios.post("/api/v1/LightSail/Reboot", data,
+            {withCredentials: true}).then(rsp => {
+          if (rsp.data.code === 200) {
+            this.messageText = "已添加至重启队列"
+          }
+        }).catch(rsp => {
+          if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+          this.messageText = "操作失败"
+        }).finally(() => {
+          this.message = true
+          this.loading = false
+        })
+      }
+    },
+    deleteInstance(item) {
+      if (item.Status !== '') {
+        this.loading = true
+        let data = new FormData()
+        data.append('secretName', this.secretName)
+        data.append('name', item.Name)
+        data.append("zone", this.zoneSelected)
+        data.append("sourceName", item.SourceName)
+        axios.post("/api/v1/LightSail/Delete", data,
+            {withCredentials: true}).then(rsp => {
+          if (rsp.data.code === 200) {
+            this.messageText = "已添加至删除队列"
+          }else{
+            this.messageText = "操作失败"
+          }
+        }).catch(rsp => {
+          if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+          this.messageText = "操作失败"
+        }).finally(() => {
+          this.message = true
+          this.loading = false
+        })
+      }
+    }
+  },
+  mounted() {
+    this.$on("secretSelect", secret => {
+      this.secretName = secret
+      this.getRegions()
+      this.refreshLs()
+    })
+  }
+}
+</script>
+----------------------------------------
+内容来自文件: ./web/src/components/loading.vue
+
+----------------------------------------
+内容来自文件: ./web/src/components/message.vue
+
+----------------------------------------
+内容来自文件: ./web/src/plugins/vuetify.js
+import Vue from 'vue';
+import Vuetify from 'vuetify/lib/framework';
+
+Vue.use(Vuetify);
+
+export default new Vuetify({
+    breakpoint: {
+        mobileBreakpoint: 'sm'
+    }
+});
+----------------------------------------
+内容来自文件: ./web/src/router/index.js
+import Vue from 'vue'
+import VueRouter from 'vue-router'
+import Home from '@/views/Home.vue'
+import Login from '@/views/Login'
+import Register from "@/views/Register"
+import Instance from '@/views/Instance'
+import Quota from '@/views/Quota'
+import User from '@/views/User'
+import Manger from '@/views/Manger'
+
+Vue.use(VueRouter)
+
+const routes = [
+    {
+        path: '/',
+        name: 'Home',
+        component: Home
+    },
+    {
+        path: '/Login',
+        name: 'Login',
+        component: Login
+    },
+    {
+        path: '/Register',
+        name: 'Register',
+        component: Register
+    },
+    {
+        path: '/Instance',
+        name: 'Instance',
+        component: Instance,
+        meta: {
+            needLogin: true
+        }
+    },
+    {
+        path: '/User',
+        name: 'User',
+        component: User,
+        meta: {
+            needLogin: true
+        }
+    },
+    {
+        path: '/Quota',
+        name: 'Quota',
+        component: Quota,
+        meta: {
+            needLogin: true
+        }
+    },
+    {
+        path: '/Manger',
+        name: 'Manger',
+        component: Manger,
+        meta: {
+            needLogin: true
+        }
+    }
+]
+
+const router = new VueRouter({
+    mode: 'history',
+    base: process.env.BASE_URL,
+    routes
+})
+
+function CheckCookie(name) {
+    let arr = document.cookie.match(new RegExp("(^| )" + name + "=([^;]*)(;|$)"));
+    return arr != null;
+}
+
+router.beforeEach((to, from, next) => {
+    if (to.meta.needLogin) {
+        if (CheckCookie("loginSession")) {
+            next()
+        } else {
+            next({
+                path: '/login',
+            })
+        }
+    } else {
+        next()
+    }
+});
+
+export default router
+----------------------------------------
+内容来自文件: ./web/src/views/Home.vue
+<template>
+  <v-container>
+    <v-row class="text-center">
+      <v-col cols="12">
+        <v-img
+            :src="require('../assets/aws.png')"
+            class="my-3"
+            contain
+            height="200"
+        />
+      </v-col>
+
+      <v-col class="mb-4">
+        <h1 class="display-2 font-weight-bold mb-3">
+          欢迎使用AWS Panel
+        </h1>
+
+        <p class="subheading font-weight-regular">
+          使用AWS Panel可以方便的管理AWS资源，比如EC2、Lightsail等。
+        </p>
+      </v-col>
+
+      <v-col
+          class="mb-5"
+          cols="12"
+      >
+        <h2 class="headline font-weight-bold mb-3">
+          Thanks
+        </h2>
+
+        <v-row justify="center">
+          <a
+              v-for="(link, i) in thanks"
+              :key="i"
+              :href="link.href"
+              class="subheading mx-3"
+              target="_blank"
+          >
+            {{ link.text }}
+          </a>
+        </v-row>
+        <v-row justify="center">
+          <p>感谢 <a href="https://www.jetbrains.com/">JetBrains</a> 为本项目提供的 <a
+              href="https://www.jetbrains.com/webstorm/">WebStorm</a> 和 <a
+              href="https://www.jetbrains.com/go/">Goland</a> IDE的免费使用授权</p>
+        </v-row>
+        <v-row>
+          <v-img
+              :src="require('../assets/jb_beam.svg')"
+              contain
+              height="300"
+          />
+        </v-row>
+      </v-col>
+    </v-row>
+  </v-container>
+</template>
+
+<script>
+export default {
+  name: 'Home',
+  metaInfo: {
+    title: '主页 - AWS Panel',
+  },
+  data() {
+    return {
+      thanks: [
+        {
+          text: 'Vue.js',
+          href: 'https://vuejs.org/',
+        },
+        {
+          text: 'Vuetify',
+          href: 'https://vuetifyjs.com/',
+        },
+        {
+          text: 'Axios',
+          href: 'https://github.com/axios/axios',
+        },
+        {
+          text: 'Gin',
+          href: 'https://github.com/gin-gonic/gin',
+        },
+        {
+          text: 'aws-sdk-go',
+          href: 'https://github.com/aws/aws-sdk-go'
+        }
+      ],
+    }
+  },
+}
+</script>
+----------------------------------------
+内容来自文件: ./web/src/views/Instance.vue
+<template>
+  <v-app>
+    <v-container>
+      <v-row class="mb-5">
+        <v-col cols="12">
+          <v-select
+              v-model="secretSelected"
+              :items="secrets"
+              label="密钥"
+              solo
+              dense
+              hide-details
+              @change="secretSelect"
+          ></v-select>
+        </v-col>
+        <v-col cols="12">
+          <v-card>
+            <v-card-title>
+              Ec2实例
+            </v-card-title>
+            <v-card-subtitle>
+              Ec2 Instances
+            </v-card-subtitle>
+            <v-card-text>
+              <v-row>
+                <v-col cols="auto">
+                  <v-select
+                      v-model="regionSelected"
+                      :items="regions"
+                      label="区域"
+                      solo
+                      dense
+                      hide-details
+                      @change="refresh"
+                  ></v-select>
+                </v-col>
+                <v-col cols="auto">
+                  <v-btn
+                      color="info"
+                      @click="createCheck"
+                  >
+                    创建
+                  </v-btn>
+                  <v-dialog
+                      v-model="createDialog"
+                      max-width="600px"
+                  >
+                    <v-card>
+                      <v-card-title>
+                        <span class="text-h5">创建Ec2</span>
+                      </v-card-title>
+                      <v-card-text>
+                        <v-container>
+                          <v-form ref="createForm">
+                            <v-row>
+                              <v-col
+                                  cols="12"
+                              >
+                                <v-text-field
+                                    v-model="ec2Name"
+                                    :rules="formRequired"
+                                    label="名称"
+                                    required
+                                ></v-text-field>
+                              </v-col>
+                              <v-col
+                                  cols="12"
+                              >
+                                <v-select
+                                    v-model="typeSelected"
+                                    :items="type"
+                                    :rules="formRequired"
+                                    label="类型"
+                                    required
+                                ></v-select>
+                              </v-col>
+                              <v-col
+                                  cols="12"
+                              >
+                                <v-select
+                                    v-model="amiSelected"
+                                    :items="ami"
+                                    :rules="formRequired"
+                                    label="操作系统"
+                                    required
+                                ></v-select>
+                              </v-col>
+                              <v-col
+                                  cols="12"
+                              >
+                                <v-select
+                                    v-model="diskSelected"
+                                    :items="disk"
+                                    :rules="formRequired"
+                                    label="硬盘大小"
+                                    required
+                                ></v-select>
+                              </v-col>
+                            </v-row>
+                          </v-form>
+                        </v-container>
+                      </v-card-text>
+                      <v-card-actions>
+                        <v-spacer></v-spacer>
+                        <v-btn
+                            color="blue darken-1"
+                            text
+                            @click="createDialog = false"
+                        >
+                          取消
+                        </v-btn>
+                        <v-btn
+                            color="blue darken-1"
+                            text
+                            @click="create"
+                        >
+                          创建
+                        </v-btn>
+                      </v-card-actions>
+                    </v-card>
+                  </v-dialog>
+                  <v-dialog
+                      v-model="sshKeyDialog"
+                      max-width="600px"
+                  >
+                    <v-card>
+                      <v-card-title>
+                        <span class="text-h5">SSH密钥</span>
+                      </v-card-title>
+                      <v-card-text>
+                        <v-textarea readonly v-model="sshKey"></v-textarea>
+                      </v-card-text>
+                      <v-card-actions>
+                        <v-spacer></v-spacer>
+                        <v-btn
+                            color="blue darken-1"
+                            text
+                            @click="copySshKey"
+                        >
+                          复制
+                        </v-btn>
+                      </v-card-actions>
+                    </v-card>
+                  </v-dialog>
+                </v-col>
+                <v-col cols="auto">
+                  <v-btn color="info" @click="refresh">刷新</v-btn>
+                </v-col>
+                <v-spacer></v-spacer>
+                <v-col cols="12">
+                  <v-data-table
+                      :footer-props="{
+              itemsPerPageText: '每页实例数',
+            }"
+                      :headers="headers"
+                      :items="Instances"
+                      :items-per-page="5"
+                      :loading="tableLoading"
+                      loading-text="正在加载..."
+                      class="elevation-1"
+                      disable-sort
+                  >
+                    <template slot="no-data">
+                      <div>无任何实例</div>
+                    </template>
+                    <template v-slot:item.Action="{ item }">
+                      <v-tooltip bottom>
+                        <template v-slot:activator="{ on, attrs }">
+                          <v-btn
+                              color="info"
+                              icon
+                              v-bind="attrs"
+                              @click="startInstance(item)"
+                              v-on="on"
+                          >
+                            <v-icon>mdi-play</v-icon>
+                          </v-btn>
+                        </template>
+                        <span>启动</span>
+                      </v-tooltip>
+
+                      <v-tooltip bottom>
+                        <template v-slot:activator="{ on, attrs }">
+                          <v-btn
+                              color="info"
+                              icon
+                              v-bind="attrs"
+                              @click="stopInstance(item)"
+                              v-on="on"
+                          >
+                            <v-icon>mdi-stop</v-icon>
+                          </v-btn>
+                        </template>
+                        <span>停止</span>
+                      </v-tooltip>
+
+                      <v-tooltip bottom>
+                        <template v-slot:activator="{ on, attrs }">
+                          <v-btn
+                              color="info"
+                              icon
+                              v-bind="attrs"
+                              @click="restartInstance(item)"
+                              v-on="on"
+                          >
+                            <v-icon>mdi-restart</v-icon>
+                          </v-btn>
+                        </template>
+                        <span>重启</span>
+                      </v-tooltip>
+
+                      <v-tooltip bottom>
+                        <template v-slot:activator="{ on, attrs }">
+                          <v-btn
+                              color="info"
+                              icon
+                              v-bind="attrs"
+                              @click="deleteInstance(item)"
+                              v-on="on"
+                          >
+                            <v-icon>mdi-delete</v-icon>
+                          </v-btn>
+                        </template>
+                        <span>删除</span>
+                      </v-tooltip>
+                    </template>
+                  </v-data-table>
+                </v-col>
+              </v-row>
+            </v-card-text>
+          </v-card>
+        </v-col>
+        <v-col cols="12">
+          <lightsail
+              ref="lightsail"
+              :loading="loading"
+              :message="message"
+              :messageText="messageText"
+          ></lightsail>
+        </v-col>
+      </v-row>
+      <v-overlay v-model="loading">
+        <v-progress-circular
+            indeterminate
+            size="64"
+        ></v-progress-circular>
+      </v-overlay>
+      <v-snackbar
+          v-model="message"
+      >
+        {{ messageText }}
+
+        <template v-slot:action="{ attrs }">
+          <v-btn
+              color="info"
+              text
+              v-bind="attrs"
+              @click="message = false"
+          >
+            Close
+          </v-btn>
+        </template>
+      </v-snackbar>
+    </v-container>
+  </v-app>
+</template>
+
+<script>
+import axios from "../api"
+import Lightsail from "../components/lightsail";
+
+export default {
+  name: 'Instances',
+  components: {Lightsail},
+  metaInfo: {
+    title: '实例 - AWS Panel',
+  },
+  data: () => ({
+    formRequired: [
+      v => !!v || "必填项！"
+    ],
+    createDialog: false,
+    sshKeyDialog: false,
+    sshKey: '',
+    //secretsLoading: false,
+    tableLoading: false,
+    regions: [
+      {text: '弗吉尼亚北部', value: 'us-east-1'},
+      {text: '俄亥俄', value: 'us-east-2'},
+      {text: '加利福尼亚北部', value: 'us-west-1'},
+      {text: '俄勒冈', value: 'us-west-2'},
+      {text: "香港", value: "ap-east-1"},
+      {text: '日本', value: 'ap-northeast-1'},
+      {text: "大阪", value: "ap-northeast-3"},
+      {text: '韩国', value: 'ap-northeast-2'},
+      {text: '加拿大', value: 'ca-central-1'},
+      {text: '墨西哥', value: 'us-east-3'},
+      {text: '澳大利亚', value: 'ap-southeast-6'},
+      {text: '新加坡', value: 'ap-southeast-1'},
+      {text: '澳洲', value: 'ap-southeast-2'},
+      {text: '法国', value: 'eu-central-1'},
+      {text: '冰岛', value: 'eu-west-1'},
+      {text: '德国', value: 'eu-west-2'},
+      {text: '俄罗斯', value: 'eu-west-3'},
+      {text: '印度', value: 'ap-south-1'},
+      {text: '新西兰', value: 'ap-southeast-3'},
+      {text: '马来西亚', value: 'ap-southeast-5'},
+      {text: '泰国', value: 'ap-northeast-3'},
+      {text: '菲律宾', value: 'ap-southeast-4'},
+      {text: '西班牙', value: 'eu-west-4'},
+      {text: '瑞士', value: 'eu-west-6'},
+    ],
+    regionSelected: '',
+    secrets: [],
+    secretSelected: '',
+    headers: [
+      {text: '操作', value: 'Action'},
+      {text: '名称', value: 'Name'},
+      {text: '实例ID', value: 'InstanceId'},
+      {text: '状态', value: 'Status'},
+      {text: '类型', value: 'Type'},
+      {text: 'IP', value: 'Ip'}
+    ],
+    ec2Name: '',
+    type: [
+      't2.micro',
+      't2.small',
+      't2.medium',
+      't2.large',
+      't2.xlarge',
+      't2.2xlarge',
+    ],
+    typeSelected: '',
+    ami: [
+      {text: 'Debian10', value: 'debian-10-amd64-20210329-591'},
+      {text: 'Ubuntu20.04', value: 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430'},
+      {text: 'Redhat8', value: 'RHEL_HA-8.4.0_HVM-20210504-x86_64-2-Hourly2-GP2'}
+    ],
+    amiSelected: '',
+    disk: [
+      {text: '8GB', value: 8},
+      {text: '16GB', value: 16},
+      {text: '32GB', value: 32},
+      {text: '64GB', value: 64},
+      {text: '128GB', value: 128},
+      {text: '256GB', value: 256},
+      {text: '512GB', value: 512},
+      {text: '1024GB', value: 1024},
+    ],
+    diskSelected: '',
+    Instances: [],
+    message: false,
+    messageText: '',
+    loading: false,
+  }),
+  mounted() {
+    axios.get("/api/v1/Secret/List", {withCredentials: true}).then(response => {
+      let tmp = []
+      if (response.data.code === 200) {
+        for (const v of response.data.data) {
+          tmp.push({
+            text: v.name,
+            id: v.id,
+            secret: v.secret
+          })
+        }
+        this.secrets = tmp
+      } else {
+        console.error("load secret error: ", response.data.msg)
+      }
+    })
+  },
+  methods:
+      {
+        secretSelect() {
+          this.refresh()
+          this.$refs.lightsail.$emit("secretSelect", this.secretSelected)
+        },
+        createCheck() {
+          if ((this.regionSelected === '') && (this.secretSelected === '')) {
+            console.log(this.regionSelected, this.secretSelected)
+            this.messageText = '请先选择密钥和区域'
+            this.message = true
+          } else {
+            this.createDialog = true
+          }
+        },
+        refresh() {
+          if ((this.regionSelected !== '') && (this.secretSelected !== '')) {
+            this.tableLoading = true
+            let data = new FormData()
+            data.append("region", this.regionSelected)
+            data.append("secretName", this.secretSelected)
+            axios.post('/api/v1/Ec2/List', data, {withCredentials: true}).then(response => {
+              if (response.data.code === 200) {
+                if (response.data.data == null) {
+                  this.Instances = []
+                } else {
+                  this.Instances = response.data.data
+                }
+              } else {
+                this.Instances = []
+                console.error(response.data.msg)
+              }
+            }).finally(() => {
+              this.tableLoading = false
+            });
+          }
+        },
+        create() {
+          if (this.$refs.createForm.validate()) {
+            this.createDialog = false
+            this.loading = true
+            let data = new FormData()
+            data.append("region", this.regionSelected)
+            data.append("secretName", this.secretSelected)
+            data.append("ec2Name", this.ec2Name)
+            data.append("ec2Type", this.typeSelected)
+            data.append("ami", this.amiSelected)
+            data.append("disk", this.diskSelected)
+            axios.post("/api/v1/Ec2/Create", data, {withCredentials: true}).then(response => {
+              if (response.data.code === 200) {
+                this.messageText = '已添加至创建队列！'
+                this.sshKey = response.data.data
+              }
+            }).catch(rsp =>{
+              if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+              this.messageText="操作失败"
+            }).finally(() => {
+              this.$refs.createForm.reset()
+              this.loading = false
+              this.sshKeyDialog = true
+              this.message = true
+            })
+          }
+        },
+        copySshKey() {
+          this.sshKeyDialog = false
+          navigator.clipboard.writeText(this.sshKey).then(() => {
+            this.messageText = '已复制到剪贴板'
+            this.message = true
+            this.sshKey = ''
+            this.refresh()
+          })
+        },
+        startInstance(item) {
+          if (item.Status !== '') {
+            this.loading = true
+            let data = new FormData()
+            data.append("region", this.regionSelected)
+            data.append("secretName", this.secretSelected)
+            data.append("ec2Id", item.InstanceId)
+            axios.post("/api/v1/Ec2/Start", data, {withCredentials: true}).then(response => {
+              if (response.data.code === 200) {
+                this.messageText = '已添加至启动队列！'
+                this.refresh()
+              }
+            }).catch(rsp =>{
+              if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+              this.messageText="操作失败"
+            }).finally(() => {
+              this.loading = false
+              this.message = true
+            })
+          }
+        },
+        stopInstance(item) {
+          if (item.Status !== '') {
+            this.loading = true
+            let data = new FormData()
+            data.append("region", this.regionSelected)
+            data.append("secretName", this.secretSelected)
+            data.append("ec2Id", item.InstanceId)
+            axios.post("/api/v1/Ec2/Stop", data, {withCredentials: true}).then(response => {
+              if (response.data.code === 200) {
+                this.messageText = '已添加至停止队列！'
+                this.refresh()
+              }
+            }).catch(rsp =>{
+              if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+              this.messageText="操作失败"
+            }).finally(() => {
+              this.loading = false
+              this.message=true
+            })
+          }
+        },
+        restartInstance(item) {
+          if (item.Status !== '') {
+            this.loading = true
+            let data = new FormData()
+            data.append("region", this.regionSelected)
+            data.append("secretName", this.secretSelected)
+            data.append("ec2Id", item.InstanceId)
+            axios.post("/api/v1/Ec2/Reboot", data, {withCredentials: true}).then(response => {
+              if (response.data.code === 200) {
+                this.messageText = '已添加至重启队列！'
+                this.refresh()
+              }
+            }).catch(rsp =>{
+              if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+              this.messageText="操作失败"
+            }).finally(() => {
+              this.message=true
+              this.loading = false
+            })
+          }
+        },
+        deleteInstance(item) {
+          if (item.Status !== '') {
+            this.loading = true
+            let data = new FormData()
+            data.append("region", this.regionSelected)
+            data.append("secretName", this.secretSelected)
+            data.append("ec2Id", item.InstanceId)
+            axios.post("/api/v1/Ec2/Delete", data, {withCredentials: true}).then(response => {
+              if (response.data.code === 200) {
+                this.messageText = '已添加至删除队列！'
+                this.refresh()
+              }
+            }).catch(rsp =>{
+              if (rsp.response.data.msg !== undefined) {
+            console.error(rsp.response.data.msg)
+          }
+              this.messageText="操作失败"
+            }).finally(() => {
+              this.message=true
+              this.loading = false
+            })
+          }
+        },
+      },
+}
+
+
+</script>
+----------------------------------------
+内容来自文件: ./web/src/views/Login.vue
+<template>
+  <v-app>
+    <v-container>
+      <v-card>
+        <v-card-title>登陆</v-card-title>
+        <v-card-subtitle>Login</v-card-subtitle>
+        <v-card-text>
+          <v-row>
+            <v-col cols="5">
+              <v-form ref="loginForm">
+                <v-text-field
+                    v-model="username"
+                    :rules="usernameRules"
+                    label="用户名"
+                    name="username"
+                    prepend-inner-icon="mdi-account-outline"
+                    required
+                    type="text"
+                ></v-text-field>
+                <v-text-field
+                    id="password"
+                    v-model="password"
+                    :rules="passwordRules"
+                    label="密码"
+                    name="password"
+                    prepend-inner-icon="mdi-lock"
+                    required
+                    type="password"
+                ></v-text-field>
+              </v-form>
+            </v-col>
+          </v-row>
+        </v-card-text>
+        <v-card-actions>
+          <v-row>
+            <v-col cols="3">
+              <v-btn block color="info" v-bind:loading="loading" @click="submit">登陆</v-btn>
+            </v-col>
+          </v-row>
+        </v-card-actions>
+      </v-card>
+      <v-snackbar
+          v-model="snackbar"
+      >
+        {{ text }}
+
+        <template v-slot:action="{ attrs }">
+          <v-btn
+              color="info"
+              text
+              v-bind="attrs"
+              @click="snackbar = false"
+          >
+            Close
+          </v-btn>
+        </template>
+      </v-snackbar>
+    </v-container>
+  </v-app>
+</template>
+
+<script>
+import axios from "../api";
+
+export default {
+  name: "login",
+  metaInfo: {
+    title: '登陆 - AWS Panel',
+  },
+  data() {
+    return {
+      text: "登陆失败！",
+      snackbar: false,
+      username: "",
+      usernameRules: [
+        v => !!v || "用户名为必填项",
+        v => /^[a-zA-Z0-9_-]{4,8}$/.test(v) || "用户名无效"
+      ],
+      password: "",
+      passwordRules: [v => !!v || "密码为必填项"],
+      loading: false,
+    }
+  },
+  methods: {
+    submit() {
+      if (this.$refs.loginForm.validate()) {
+        this.loading = true
+        let data = new FormData()
+        data.append("username", this.username)
+        data.append("password", this.password)
+        axios.post("/api/v1/User/Login",
+            data, {withCredentials: true}).then((response) => {
+          if (response.data.code === 200) {
+            if (response.data.isAdmin) {
+              this.$cookie.set('isAdmin', 'true')
+            }
+            this.text = "登陆成功，即将跳转到主页..."
+            setTimeout(() => {
+              this.$router.push("/")
+            }, 2000);
+          } else {
+            this.text = response.data.msg
+          }
+        }).catch((error) => {
+          console.error(error)
+        }).finally(() => {
+          this.snackbar = true
+          this.loading = false
+        })
+      }
+    }
+  }
+};
+</script>
+----------------------------------------
+内容来自文件: ./web/src/views/Manger.vue
+<template>
+  <v-app>
+    <v-container>
+      <v-card>
+        <v-card-title>
+          用户列表
+        </v-card-title>
+        <v-card-subtitle>
+          User List
+        </v-card-subtitle>
+        <v-card-text>
+          <v-col cols="12">
+            <v-row>
+              <!--<v-col cols="auto">
+                <v-btn
+                    color="info"
+                    @click="addUserDialog=true"
+                >
+                  添加
+                </v-btn>
+                <v-dialog
+                    v-model="addUserDialog"
+                    max-width="600px"
+                >
+                  <v-card>
+                    <v-card-title>
+                      <span class="text-h5">添加用户</span>
+                    </v-card-title>
+                    <v-card-text>
+                      <v-container>
+                        <v-form ref="addForm">
+                          <v-row>
+                            <v-col
+                                cols="12"
+                            >
+                              <v-text-field
+                                  v-model="addUserName"
+                                  :rules="formRequired"
+                                  label="用户名"
+                                  required
+                              ></v-text-field>
+                            </v-col>
+                            <v-col cols="12">
+                              <v-text-field
+                                  v-model="addPassword"
+                                  :rules="formRequired"
+                                  label="密码"
+                                  required
+                              ></v-text-field>
+                            </v-col>
+                            <v-col cols="12">
+                              <v-text-field
+                                  v-model="addConfirmPassword"
+                                  :rules="formRequired"
+                                  label="确认密码"
+                                  required></v-text-field>
+                            </v-col>
+                          </v-row>
+                        </v-form>
+                      </v-container>
+                    </v-card-text>
+                    <v-card-actions>
+                      <v-spacer></v-spacer>
+                      <v-btn
+                          color="blue darken-1"
+                          text
+                          @click="addUserDialog = false"
+                      >
+                        取消
+                      </v-btn>
+                      <v-btn
+                          :loading="addLoading"
+                          color="blue darken-1"
+                          text
+                          @click="addUser()"
+                      >
+                        添加
+                      </v-btn>
+                    </v-card-actions>
+                  </v-card>
+                </v-dialog>
+              </v-col>-->
+              <v-col cols="auto">
+                <v-btn color="info" @click="refresh">刷新</v-btn>
+              </v-col>
+              <v-spacer></v-spacer>
+              <v-col cols="12">
+                <v-data-table
+                    disable-sort
+                    :footer-props="{
+                      itemsPerPageText: '每页用户数',
+                      }"
+                    :headers="headers"
+                    :items="users"
+                    :items-per-page=5
+                    :loading="userLoading"
+                    loading-text="正在加载..."
+                    class="elevation-1">
+                  <template slot="no-data">
+                    <div>无任何用户</div>
+                  </template>
+                  <template v-slot:item.Action="{ item }">
+                    <v-tooltip bottom>
+                      <template v-slot:activator="{ on, attrs }">
+                        <v-btn
+                            color="info"
+                            icon
+                            v-bind="attrs"
+                            @click="deleteUser(item)"
+                            v-on="on"
+                        >
+                          <v-icon>mdi-delete</v-icon>
+                        </v-btn>
+                      </template>
+                      <span>删除</span>
+                    </v-tooltip>
+                    <v-tooltip bottom>
+                      <template v-slot:activator="{ on, attrs }">
+                        <v-btn
+                            color="info"
+                            icon
+                            v-bind="attrs"
+                            @click="banUser(item)"
+                            v-on="on"
+                        >
+                          <v-icon>mdi-lock</v-icon>
+                        </v-btn>
+                      </template>
+                      <span>封禁</span>
+                    </v-tooltip>
+                    <v-tooltip bottom>
+                      <template v-slot:activator="{ on, attrs }">
+                        <v-btn
+                            color="info"
+                            icon
+                            v-bind="attrs"
+                            @click="unBanUser(item)"
+                            v-on="on"
+                        >
+                          <v-icon>mdi-lock-open</v-icon>
+                        </v-btn>
+                      </template>
+                      <span>解封</span>
+                    </v-tooltip>
+                  </template>
+                </v-data-table>
+              </v-col>
+            </v-row>
+          </v-col>
+        </v-card-text>
+      </v-card>
+      <v-overlay v-model="loading">
+        <v-progress-circular
+            indeterminate
+            size="64"
+        ></v-progress-circular>
+      </v-overlay>
+      <v-snackbar
+          v-model="message"
+      >
+        {{ messageText }}
+        <template v-slot:action="{ attrs }">
+          <v-btn
+              color="info"
+              text
+              v-bind="attrs"
+              @click="message = false"
+          >
+            Close
+          </v-btn>
+        </template>
+      </v-snackbar>
+    </v-container>
+  </v-app>
+</template>
+
+
+<script>
+import api from '../api'
+
+export default {
+  name: 'user',
+  metaInfo: {
+    title: '管理中心 - AWS Panel',
+  },
+  data() {
+    return {
+      loading: false,
+      message: false,
+      messageText: '',
+      formRequired: [
+        v => !!v || "必填项！"
+      ],
+      addUserDialog: false,
+      addUserName: '',
+      addPassword: '',
+      addConfirmPassword: '',
+      addLoading: false,
+      userLoading: false,
+      headers: [
+        {text: '操作', value: 'Action'},
+        {text: '用户名', value: 'UserName'},
+        {text: '状态', value: 'Status'},
+        {text: '管理权限', value: 'IsAdmin'},
+      ],
+      users: [],
+    }
+  },
+  methods: {
+    /*addUser(){
+    },*/
+    refresh() {
+      this.userLoading = true;
+      api.get("/api/v1/User/List").then(rsp => {
+        if (rsp.data.code === 200) {
+          let tmp = []
+          for (const v of rsp.data.data) {
+            tmp.push({
+              UserName: v.UserName,
+              Status: v.Status ? '封禁' : '正常',
+              IsAdmin: v.IsAdmin ? '是' : '否',
+            })
+          }
+          this.users = tmp
+        } else {
+          console.log("list user list error: ", rsp.data.msg)
+        }
+      }).finally(() => {
+        this.userLoading = false
+      })
+    },
+    deleteUser(item) {
+      let data = new FormData()
+      data.append("username", item.UserName)
+      api.post("/api/v1/User/Delete",data).then(rsp => {
+        this.messageText = rsp.data.msg
+        this.message = true
+      }).finally(()=>{
+        this.refresh()
+      })
+    },
+    banUser(item) {
+      let data = new FormData()
+      data.append("username", item.UserName)
+      api.post("/api/v1/User/Ban",data).then(rsp => {
+        this.messageText = rsp.data.msg
+        this.message = true
+      }).finally(()=>{
+        this.refresh()
+      })
+    },
+    unBanUser(item){
+      let data = new FormData()
+      data.append("username", item.UserName)
+      api.post("/api/v1/User/UnBan",data).then(rsp => {
+        this.messageText = rsp.data.msg
+        this.message = true
+      }).finally(()=>{
+        this.refresh()
+      })
+    }
+  },
+  mounted() {
+    this.refresh()
+  }
+}
+
+</script>
+----------------------------------------
+内容来自文件: ./web/src/views/Quota.vue
+
+----------------------------------------
+内容来自文件: ./web/src/views/Register.vue
+<template>
+  <v-app>
+    <v-container>
+        <v-card>
+          <v-card-title>注册</v-card-title>
+          <v-card-subtitle>Register</v-card-subtitle>
+          <v-card-text>
+            <v-row>
+              <v-col cols="5">
+                <v-form ref="registerForm">
+                  <v-text-field
+                      v-model="username"
+                      :rules="usernameRules"
+                      label="用户名"
+                      name="username"
+                      prepend-inner-icon="mdi-account-outline"
+                      required
+                      type="text"
+                  ></v-text-field>
+                  <v-text-field
+                      id="password"
+                      v-model="password"
+                      :rules="passwordRules"
+                      label="密码"
+                      name="Password"
+                      prepend-inner-icon="mdi-lock"
+                      required
+                      type="password"
+                  ></v-text-field>
+                  <v-text-field
+                      id="confirmPassword"
+                      v-model="confirmPassword"
+                      :rules="confirmPasswordRules"
+                      label="确认密码"
+                      name="Confirm Password"
+                      prepend-inner-icon="mdi-lock"
+                      required
+                      type="password"></v-text-field>
+                </v-form>
+              </v-col>
+            </v-row>
+          </v-card-text>
+          <v-card-actions>
+            <v-row>
+              <v-col cols="3">
+                <v-btn block color="info" v-bind:loading="loading" @click="submit">注册</v-btn>
+              </v-col>
+              <v-spacer></v-spacer>
+            </v-row>
+          </v-card-actions>
+        </v-card>
+      <v-snackbar
+          v-model="snackbar"
+      >
+        {{ text }}
+
+        <template v-slot:action="{ attrs }">
+          <v-btn
+              color="info"
+              text
+              v-bind="attrs"
+              @click="snackbar = false"
+          >
+            Close
+          </v-btn>
+        </template>
+      </v-snackbar>
+    </v-container>
+  </v-app>
+</template>
+
+<script>
+import axios from '../api'
+
+export default {
+  name: "register",
+  metaInfo: {
+    title: '注册 - AWS Panel',
+  },
+  data() {
+    return {
+      text: '注册失败！',
+      snackbar: false,
+      username: "",
+      usernameRules: [
+        v => !!v || "用户名为必填项",
+        v => /^[a-zA-Z0-9_-]{4,8}$/.test(v) || "用户名无效，请输入4-8位字母、数字、下划线或减号"
+      ],
+      password: '',
+      passwordRules: [v => !!v || "密码为必填项"],
+      confirmPassword: "",
+      confirmPasswordRules: [
+        v => !!v || "确认密码为必填项",
+        v => v === this.password || "密码不匹配"
+      ],
+      loading: false,
+    }
+  },
+  methods: {
+    submit() {
+      if (this.$refs.registerForm.validate()) {
+        this.loading = true
+        let data = new FormData();
+        data.append("username", this.username)
+        data.append("password", this.password)
+        axios.post("/api/v1/User/Register",
+            data).then((response) => {
+          if (response.data.code === 200) {
+            this.text = '注册成功！即将跳转至登陆页面...'
+            setTimeout(() => {
+              this.$router.push('/Login')
+            }, 2000)
+          } else {
+            this.text = response.data.msg
+          }
+        }).catch((error) => {
+          console.log(error)
+          this.loading = false
+        }).finally(() => {
+          this.snackbar = true
+          this.loading = false
+        })
+      }
+    }
+  }
+};
+</script>
+----------------------------------------
+内容来自文件: ./web/src/views/User.vue
+<template>
+  <v-app>
+    <v-container>
+      <v-row class="mb-5">
+        <v-col
+            cols="12">
+          <v-card>
+            <v-card-title>
+              用户中心
+            </v-card-title>
+            <v-card-subtitle>
+              User Center
+            </v-card-subtitle>
+            <v-card-text>
+              欢迎回来，{{ username }}
+            </v-card-text>
+          </v-card>
+        </v-col>
+
+        <v-col
+            cols="12">
+          <v-card>
+            <v-card-title>
+              修改密码
+            </v-card-title>
+            <v-card-subtitle>
+              Change Password
+            </v-card-subtitle>
+            <v-card-text>
+              <v-form ref="changeForm">
+                <v-row>
+                  <v-col cols="12">
+                    <v-text-field
+                        v-model="oldPw"
+                        :rules="formRequired"
+                        label="原密码"
+                        required
+                        type="password"
+                    ></v-text-field>
+                  </v-col>
+                  <v-col cols="6">
+                    <v-text-field
+                        v-model="newPw"
+                        :rules="formRequired"
+                        label="新密码"
+                        required
+                        type="password"
+                    ></v-text-field>
+                  </v-col>
+                  <v-col cols="6">
+                    <v-text-field
+                        v-model="confirmNewPw"
+                        :rules="confirmPwRules"
+                        label="确认新密码"
+                        required
+                        type="password"
+                    ></v-text-field>
+                  </v-col>
+                  <v-col cols="3">
+                    <v-btn block color="info" v-bind:loading="changeLoading" @click="changePassword">修改</v-btn>
+                  </v-col>
+                </v-row>
+              </v-form>
+            </v-card-text>
+          </v-card>
+        </v-col>
+
+        <v-col
+            cols="12">
+          <v-card>
+            <v-card-title>
+              密钥管理
+            </v-card-title>
+            <v-card-subtitle>
+              Secret Manger
+            </v-card-subtitle>
+            <v-card-text>
+              <v-row>
+                <v-col cols="12">
+                  <v-row>
+                    <v-col cols="auto">
+                      <v-btn
+                          color="info"
+                          @click="addSecretDialog=true"
+                      >
+                        添加
+                      </v-btn>
+                      <v-dialog
+                          v-model="addSecretDialog"
+                          max-width="600px"
+                      >
+                        <v-card>
+                          <v-card-title>
+                            <span class="text-h5">添加密钥</span>
+                          </v-card-title>
+                          <v-card-text>
+                            <v-container>
+                              <v-form ref="addForm">
+                                <v-row>
+                                  <v-col
+                                      cols="12"
+                                  >
+                                    <v-text-field
+                                        v-model="secretName"
+                                        :rules="formRequired"
+                                        label="名称"
+                                        required
+                                    ></v-text-field>
+                                  </v-col>
+                                  <v-col cols="12">
+                                    <v-text-field
+                                        v-model="secretId"
+                                        :rules="formRequired"
+                                        label="密钥ID"
+                                        required
+                                    ></v-text-field>
+                                  </v-col>
+                                  <v-col cols="12">
+                                    <v-text-field
+                                        v-model="secret"
+                                        :rules="formRequired"
+                                        label="密钥"
+                                        required></v-text-field>
+                                  </v-col>
+                                </v-row>
+                              </v-form>
+                            </v-container>
+                          </v-card-text>
+                          <v-card-actions>
+                            <v-spacer></v-spacer>
+                            <v-btn
+                                color="blue darken-1"
+                                text
+                                @click="addSecretDialog = false"
+                            >
+                              取消
+                            </v-btn>
+                            <v-btn
+                                :loading="addLoading"
+                                color="blue darken-1"
+                                text
+                                @click="addSecret"
+                            >
+                              添加
+                            </v-btn>
+                          </v-card-actions>
+                        </v-card>
+                      </v-dialog>
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-btn
+                          color="info"
+                          @click="refresh()"
+                      >
+                        刷新
+                      </v-btn>
+                    </v-col>
+                    <v-spacer></v-spacer>
+                  </v-row>
+                </v-col>
+                <v-col cols="12">
+                  <v-data-table
+                      disable-sort
+                      :footer-props="{
+                      itemsPerPageText: '每页密钥数',
+                      }"
+                      :headers="headers"
+                      :items="secrets"
+                      :items-per-page=5
+                      :loading="secretsLoading"
+                      loading-text="正在加载..."
+                      class="elevation-1">
+                    <template slot="no-data">
+                      <div>无任何密钥</div>
+                    </template>
+                    <template v-slot:item.action="{ item }">
+                      <v-tooltip bottom>
+                        <template v-slot:activator="{ on, attrs }">
+                          <v-btn
+                              color="info"
+                              icon
+                              v-bind="attrs"
+                              @click="deleteSecrets(item)"
+                              v-on="on"
+                          >
+                            <v-icon>mdi-delete</v-icon>
+                          </v-btn>
+                        </template>
+                        <span>删除</span>
+                      </v-tooltip>
+                    </template>
+                  </v-data-table>
+                </v-col>
+              </v-row>
+            </v-card-text>
+          </v-card>
+        </v-col>
+      </v-row>
+      <v-overlay v-model="loading">
+        <v-progress-circular
+            indeterminate
+            size="64"
+        ></v-progress-circular>
+      </v-overlay>
+      <v-snackbar
+          v-model="message"
+      >
+        {{ messageText }}
+        <template v-slot:action="{ attrs }">
+          <v-btn
+              color="info"
+              text
+              v-bind="attrs"
+              @click="message = false"
+          >
+            Close
+          </v-btn>
+        </template>
+      </v-snackbar>
+    </v-container>
+  </v-app>
+</template>
+
+<script>
+import axios from '../api'
+
+export default {
+  name: 'user',
+  metaInfo: {
+    title: '用户中心 - AWS Panel',
+  },
+  data() {
+    return {
+      username: '未知用户',
+      oldPw: '',
+      newPw: '',
+      confirmNewPw: '',
+      formRequired: [
+        v => !!v || "必填项！"
+      ],
+      confirmPwRules: [
+        v => !!v || "必填项!",
+        v => v === this.newPw || "密码不匹配"
+      ],
+      changeLoading: false,
+      addSecretDialog: false,
+      secretName: null,
+      secretId: null,
+      secret: null,
+      addLoading: false,
+      headers: [
+        {text: "操作", value: "action"},
+        {text: "密钥名称", value: "name"},
+      ],
+      secrets: [],
+      secretsLoading: false,
+      messageText: '',
+      message: false,
+      loading: false
+    }
+  },
+  mounted() {
+    axios.get('/api/v1/User/Info', {withCredentials: true}).then(response => {
+      this.username = response.data.name
+    })
+    axios.get('/api/v1/Secret/List', {withCredentials: true}).then(response => {
+      let tmp = []
+      for (const v of response.data.data) {
+        tmp.push({
+          name: v.name,
+          id: v.id,
+          secret: v.secret
+        })
+        this.secrets = tmp
+      }
+    })
+  },
+  methods: {
+    refresh() {
+      this.secretsLoading = true
+      axios.get('/api/v1/Secret/List', {withCredentials: true}).then(response => {
+        let tmp = []
+        if (response.data.data!=null){
+          response.data.data.forEach(v=>{
+            tmp.push({
+              name: v.name,
+              id: v.id,
+              secret: v.secret
+            })
+          })
+        }
+        this.secrets = tmp
+      }).finally(() => {
+        this.secretsLoading = false
+      })
+    },
+    changePassword() {
+      if (this.$refs.changeForm.validate()) {
+        this.changeLoading = true
+        let data = new FormData()
+        data.append('oldPassword', this.oldPw)
+        data.append('newPassword', this.newPw)
+        axios.post('/api/v1/User/ChangePassword', data, {withCredentials: true}).then(response => {
+          if (response.data.code === 200) {
+            this.$cookie.delete('usersession')
+            this.messageText = '修改成功！'
+            this.message = true
+            setTimeout(() => {
+              this.$router.push("/Login")
+            }, 2000);
+          } else {
+            this.messageText = response.data.msg
+          }
+        }).finally(()=>{
+          this.$refs.changeForm.reset()
+          this.changeLoading = false
+          this.message = true
+        })
+      }
+    },
+    deleteSecrets(item) {
+      this.loading = true
+      let data = new FormData()
+      data.append('name', item.name)
+      axios.post('api/v1/Secret/Delete', data, {withCredentials: true}).then(response => {
+        if (response.data.code === 200) {
+          this.messageText = '删除成功！'
+        } else {
+          this.messageText = response.data.msg
+        }
+      }).finally(() => {
+        this.loading = false
+        this.message = true
+        this.refresh()
+      })
+    },
+    addSecret() {
+      this.addLoading = true
+      let data = new FormData()
+      data.append('name', this.secretName)
+      data.append('id', this.secretId)
+      data.append('secret', this.secret)
+      axios.post('api/v1/Secret/Add', data, {withCredentials: true}).then(response => {
+        if (response.data.code === 200) {
+          this.messageText = '添加成功'
+        } else {
+          this.messageText = response.data.msg
+        }
+      }).finally(() => {
+        this.$refs.addForm.reset()
+        this.addLoading = false
+        this.addSecretDialog = false
+        this.message = true
+        this.refresh()
+      })
+    }
+  }
+}
+</script>
+----------------------------------------
