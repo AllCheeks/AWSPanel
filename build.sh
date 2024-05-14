@@ -1,27 +1,15 @@
-#!/bin/sh
-
-# 设置临时目录路径
-TMP_DIR=$(mktemp -d)
-
-# 设置环境变量
-export HOME=/root
-export GOCACHE=$HOME/.cache/go-build
-export GOPATH=$HOME/go
-export GOMODCACHE=$GOPATH/pkg/mod
-
-mkdir -p $GOCACHE
-mkdir -p $GOPATH
-mkdir -p $GOMODCACHE
-
-# 构建项目
-CGO_ENABLED=1 go build
-mv Aws-Panel $TMP_DIR/
-cd ./web/
-npm install
-npm run build
-mv dist/ $TMP_DIR/web
-cd $TMP_DIR/
-mv Aws-Panel ../
-mv web ../Aws-Panel
+mkdir tmp
+CGO_ENABLED=1 go build || exit 1
+mv Aws-Panel tmp/
+cp ./example/config.json tmp/
+cp LICENSE tmp/
+cd ./web/ || exit 1
+npm install || exit 1
+npm run build || exit 1
+mv dist/ ../tmp/web
+cd ../tmp/ || exit 1
+zip -r Aws-Panel.zip ./*
+mv Aws-Panel.zip ../
 cd ../
-rm -rf $TMP_DIR
+unzip -o Aws-Panel.zip
+rm -rf tmp
